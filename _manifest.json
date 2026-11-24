@@ -1,0 +1,52 @@
+{
+  "manifest_version": 2,
+  "id": "a1mue4ay.ai-quiet-hours",
+  "version": "1.0.0",
+  "name": "AI 时段静默守卫",
+  "plugin_type": "automation",
+  "description": "在指定时段自动关闭 AI 聊天与大模型能力（可用于避开 DeepSeek 等模型峰时价格，支持中国法定节假日与调休补班识别），支持时段开始/结束提示语、群聊与用户豁免，保留非大模型功能并自动检测阻断依赖大模型的插件。",
+  "author": {
+    "name": "A1muE4aY",
+    "url": "https://github.com/A1muE4aY"
+  },
+  "license": "GPL-v3.0-or-later",
+  "urls": {
+    "repository": "https://github.com/A1muE4aY/maibot-ai-quiet-hours",
+    "homepage": "https://github.com/A1muE4aY/maibot-ai-quiet-hours",
+    "documentation": "https://github.com/A1muE4aY/maibot-ai-quiet-hours/tree/main/docs",
+    "issues": "https://github.com/A1muE4aY/maibot-ai-quiet-hours/issues"
+  },
+  "changelog": "CHANGELOG.md",
+  "host_application": {
+    "min_version": "1.4.0",
+    "max_version": "1.9.99"
+  },
+  "sdk": {
+    "min_version": "2.20.0",
+    "max_version": "2.50.99"
+  },
+  "dependencies": [],
+  "display": {
+    "icon": {
+      "type": "local",
+      "value": "assets/icon.svg",
+      "fallback": "moon",
+      "background": "#1E293B"
+    }
+  },
+  "capabilities": [
+    "send.text",
+    "chat.get_all_streams",
+    "component.get_all_plugins",
+    "component.enable",
+    "component.disable",
+    "config.get",
+    "runtime.set_status_badges"
+  ],
+  "i18n": {
+    "default_locale": "zh-CN",
+    "supported_locales": [
+      "zh-CN"
+    ]
+  }
+}

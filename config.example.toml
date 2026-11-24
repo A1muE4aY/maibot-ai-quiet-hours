@@ -1,0 +1,95 @@
+[plugin]
+enabled = true
+config_version = "1.0.0"
+
+[schedule]
+timezone = ""
+check_interval_seconds = 15
+block_media_ai = true
+block_background_emoji_maintenance = true
+
+[[schedule.rules]]
+name = "DeepSeek 早高峰"
+enabled = true
+start_time = "08:00"
+end_time = "12:00"
+day_scope = "workday"
+weekdays = [
+    1,
+    2,
+    3,
+    4,
+    5,
+]
+respect_holiday_skip = true
+notify_on_start = true
+notify_on_end = true
+start_message = ""
+end_message = ""
+
+[[schedule.rules]]
+name = "DeepSeek 午高峰"
+enabled = true
+start_time = "14:00"
+end_time = "18:00"
+day_scope = "workday"
+weekdays = [
+    1,
+    2,
+    3,
+    4,
+    5,
+]
+respect_holiday_skip = true
+notify_on_start = true
+notify_on_end = true
+start_message = ""
+end_message = ""
+
+[holiday]
+enabled = true
+skip_quiet_on_holidays = false
+treat_makeup_as_workday = true
+enable_online_sync = true
+sync_timeout_seconds = 8.0
+custom_api_url = ""
+custom_holidays = []
+custom_workdays = []
+
+[notices]
+enabled = true
+notify_on_startup_if_quiet = false
+default_start_message = "💤 现已进入 AI 静默时段（原因：{rule_name}，预计 {end_time} 恢复）。\n期间 AI 聊天与依赖大模型的插件已暂停，不经过大模型的指令功能仍可正常使用。"
+default_end_message = "💡 AI 静默时段（{rule_name}）已结束，AI 聊天与大模型能力已恢复正常！"
+target_mode = "all_non_exempt_groups"
+target_groups = []
+target_users = []
+exclude_platforms = [
+    "local",
+    "webui",
+    "internal",
+]
+blocked_chat_reply = ""
+only_reply_chat_when_mentioned_or_private = true
+blocked_reply_cooldown_seconds = 300
+blocked_plugin_reply = "⏸️ 当前处于 AI 静默时段（{rule_name}，预计 {end_time} 恢复），命令 /{command_name} 所属插件（{plugin_name}）依赖大模型能力，已暂时阻断。"
+
+[plugin_guard]
+enabled = true
+block_mode = "smart"
+enable_ast_code_scan = true
+treat_model_list_capability_as_llm = false
+rescan_interval_seconds = 300
+force_block_plugins = []
+force_allow_plugins = []
+force_allow_commands = []
+
+[exemptions]
+exempt_groups = []
+exempt_users = []
+user_exempt_in_group = true
+exempt_platforms = [
+    "local",
+    "webui",
+    "internal",
+]
