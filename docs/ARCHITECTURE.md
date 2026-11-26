@@ -1,16 +1,19 @@
 # 工作原理与架构设计
 
-本插件作为纯独立 SDK v2 插件运行，**不修改 MaiBot 主程序源码**。核心由四个模块协同工作：
+本插件作为纯独立 SDK v2 插件运行，**不修改 MaiBot 主程序源码**。核心由以下模块协同工作：
 
 ```text
-plugins/ai_quiet_hours/
-├── plugin.py               # 生命周期管理、Hook 拦截链、命令、定时巡检与 WebUI API
-├── settings.py             # Pydantic v2 配置模型与 WebUI Schema（含目标选择器）
-├── schedule_engine.py      # 规则求值、跨夜继承、下次切换计算、模板渲染与豁免匹配
+ai_quiet_hours/
+├── plugin.py               # 生命周期管理、三态调度协调、Hook 拦截链、命令与 WebUI API
+├── settings.py             # Pydantic v2 配置模型（含回退模型与目标选择器字段）
+├── model_fallback.py       # 已注册模型扫描、任务模型可逆切换（含注释保留）与崩溃恢复
+├── schedule_engine.py      # 规则求值、模式优先级、跨夜继承、模板渲染与豁免匹配
 ├── holiday_calendar.py     # 四级中国节假日/调休识别与 1900–2100 农历算法兜底
-├── llm_plugin_auditor.py   # 大模型插件三层审计器与命令匹配器
+├── llm_plugin_auditor.py   # 同插件收集、大模型插件三层审计器与命令匹配器
+├── webui.json              # WebUI 自定义页面扩展声明（v2 Schema + structured_arguments）
+├── webui/console.html      # 可视化规则选择与监控控制台（回退模型/同插件/豁免群聊与用户）
 ├── _manifest.json          # 插件清单与所需宿主能力声明
-└── webui.json              # WebUI 声明式控制台页面（v2 Schema）
+└── scripts/archive_release.py # 版本归档与部署同步脚本
 ```
 
 ---

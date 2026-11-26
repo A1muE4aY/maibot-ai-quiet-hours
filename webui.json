@@ -1,19 +1,24 @@
 {
   "schema_version": 2,
   "required_capabilities": [
-    "declarative_basic"
+    "custom_pages",
+    "structured_arguments"
   ],
   "workspace_title": "AI 时段静默守卫",
   "pages": [
     {
       "id": "dashboard",
-      "mode": "declarative",
-      "title": "AI 时段静默控制台",
-      "description": "实时查看 AI 聊天静默状态、节假日识别结果、大模型插件审计清单，并支持手动切换与一键重扫。",
-      "icon": "chart",
-      "auto_refresh": true,
-      "poll_interval_seconds": 10,
+      "title": "AI 时段静默守卫",
+      "description": "配置时段回退模型切换、静默拦截、同插件屏蔽规则、豁免群聊与豁免用户",
+      "icon": "settings",
+      "mode": "custom",
+      "entry": "webui/console.html",
+      "layout": "document",
       "queries": {
+        "bootstrap": {
+          "api": "webui_console_bootstrap",
+          "version": "1"
+        },
         "status": {
           "api": "webui_status",
           "version": "1"
@@ -26,14 +31,32 @@
           "parameters": {
             "duration_minutes": {
               "type": "integer",
-              "required": false,
+              "required": true,
               "minimum": 0,
               "maximum": 1440
             },
             "reason": {
               "type": "string",
-              "required": false,
               "max_length": 120
+            }
+          }
+        },
+        "force_fallback": {
+          "api": "webui_force_fallback",
+          "version": "1",
+          "parameters": {
+            "duration_minutes": {
+              "type": "integer",
+              "required": true,
+              "minimum": 0,
+              "maximum": 1440
+            },
+            "fallback_models": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "max_length": 200
+              }
             }
           }
         },
@@ -43,7 +66,7 @@
           "parameters": {
             "duration_minutes": {
               "type": "integer",
-              "required": false,
+              "required": true,
               "minimum": 0,
               "maximum": 1440
             }
@@ -57,282 +80,170 @@
           "api": "webui_rescan_plugins",
           "version": "1"
         },
+        "rescan_models": {
+          "api": "webui_rescan_models",
+          "version": "1"
+        },
         "sync_holidays": {
           "api": "webui_sync_holidays",
           "version": "1"
-        }
-      },
-      "content": [
-        {
-          "type": "grid",
-          "columns": 4,
-          "children": [
-            {
-              "type": "stat",
-              "label": "当前 AI 状态",
-              "value": {
-                "source": "status",
-                "field": "state_label"
-              }
-            },
-            {
-              "type": "stat",
-              "label": "今日日期类型",
-              "value": {
-                "source": "status",
-                "field": "today_summary"
-              }
-            },
-            {
-              "type": "stat",
-              "label": "下次状态切换",
-              "value": {
-                "source": "status",
-                "field": "next_transition_label"
-              }
-            },
-            {
-              "type": "stat",
-              "label": "识别到的大模型插件",
-              "value": {
-                "source": "status",
-                "field": "blocked_plugin_count"
-              }
-            }
-          ]
         },
-        {
-          "type": "card",
-          "label": "快速控制与手动覆盖",
-          "children": [
-            {
-              "type": "text",
-              "label": "当前状态说明",
-              "value": {
-                "source": "status",
-                "field": "status_detail"
+        "save_model_fallback": {
+          "api": "webui_save_model_fallback",
+          "version": "1",
+          "parameters": {
+            "enabled": {
+              "type": "boolean",
+              "required": true
+            },
+            "fallback_models": {
+              "type": "array",
+              "required": true,
+              "items": {
+                "type": "string",
+                "max_length": 200
               }
             },
-            {
-              "type": "grid",
-              "columns": 2,
-              "children": [
-                {
-                  "type": "input",
-                  "name": "duration_minutes",
-                  "label": "临时生效时长（分钟，0 表示持续至手动取消）",
-                  "value": 60
-                },
-                {
-                  "type": "input",
-                  "name": "reason",
-                  "label": "手动静默说明（可选）",
-                  "value": "管理员临时开启"
-                }
+            "target_tasks": {
+              "type": "array",
+              "required": true,
+              "items": {
+                "type": "string",
+                "max_length": 64
+              }
+            },
+            "switch_mode": {
+              "type": "string",
+              "required": true,
+              "choices": [
+                "replace",
+                "prepend"
               ]
             },
-            {
-              "type": "grid",
-              "columns": 3,
-              "children": [
-                {
-                  "type": "button",
-                  "label": "立即开启 AI 静默",
-                  "action": "force_quiet",
-                  "variant": "primary"
-                },
-                {
-                  "type": "button",
-                  "label": "立即恢复 AI 运行",
-                  "action": "force_active",
-                  "variant": "muted"
-                },
-                {
-                  "type": "button",
-                  "label": "恢复自动时段调度",
-                  "action": "restore_auto",
-                  "variant": "muted"
-                }
-              ]
-            },
-            {
-              "type": "grid",
-              "columns": 2,
-              "children": [
-                {
-                  "type": "button",
-                  "label": "重新扫描大模型插件",
-                  "action": "rescan_plugins",
-                  "variant": "muted"
-                },
-                {
-                  "type": "button",
-                  "label": "立即同步年度节假日",
-                  "action": "sync_holidays",
-                  "variant": "muted"
-                }
-              ]
+            "fallback_to_quiet_if_unavailable": {
+              "type": "boolean",
+              "required": true
             }
-          ]
+          }
         },
-        {
-          "type": "tabs",
-          "children": [
-            {
-              "type": "stack",
-              "label": "大模型插件审计",
-              "children": [
-                {
-                  "type": "text",
-                  "label": "最近扫描时间",
-                  "value": {
-                    "source": "status",
-                    "field": "last_scan_at"
-                  }
-                },
-                {
-                  "type": "table",
-                  "label": "已加载与已安装插件的大模型依赖检查结果",
-                  "value": {
-                    "source": "status",
-                    "field": "audited_plugins"
-                  },
-                  "columns": [
-                    {
-                      "field": "plugin_id",
-                      "label": "插件 ID"
-                    },
-                    {
-                      "field": "display_name",
-                      "label": "插件名称"
-                    },
-                    {
-                      "field": "decision",
-                      "label": "静默期策略"
-                    },
-                    {
-                      "field": "commands",
-                      "label": "已注册命令"
-                    },
-                    {
-                      "field": "reasons",
-                      "label": "检测依据"
-                    }
-                  ]
-                }
+        "save_plugin_guard": {
+          "api": "webui_save_plugin_guard",
+          "version": "1",
+          "parameters": {
+            "enabled": {
+              "type": "boolean",
+              "required": true
+            },
+            "block_mode": {
+              "type": "string",
+              "required": true,
+              "choices": [
+                "smart",
+                "hook_only",
+                "disable_components"
               ]
             },
-            {
-              "type": "stack",
-              "label": "静默时段规则",
-              "children": [
-                {
-                  "type": "table",
-                  "label": "当前已配置的静默规则",
-                  "value": {
-                    "source": "status",
-                    "field": "rules"
-                  },
-                  "columns": [
-                    {
-                      "field": "name",
-                      "label": "规则名"
-                    },
-                    {
-                      "field": "enabled_label",
-                      "label": "状态"
-                    },
-                    {
-                      "field": "time_range",
-                      "label": "时间段"
-                    },
-                    {
-                      "field": "day_scope",
-                      "label": "日期范围"
-                    },
-                    {
-                      "field": "active_now",
-                      "label": "当前是否命中"
-                    }
-                  ]
-                }
-              ]
+            "force_block_plugins": {
+              "type": "array",
+              "required": true,
+              "items": {
+                "type": "string",
+                "max_length": 200
+              }
             },
-            {
-              "type": "stack",
-              "label": "近期节假日与调休",
-              "children": [
-                {
-                  "type": "text",
-                  "label": "日历数据来源",
-                  "value": {
-                    "source": "status",
-                    "field": "holiday_source_summary"
-                  }
-                },
-                {
-                  "type": "table",
-                  "label": "未来 90 天法定节假日与调休补班",
-                  "value": {
-                    "source": "status",
-                    "field": "upcoming_holidays"
-                  },
-                  "columns": [
-                    {
-                      "field": "date",
-                      "label": "日期"
-                    },
-                    {
-                      "field": "day_type_label",
-                      "label": "类型"
-                    },
-                    {
-                      "field": "holiday_name",
-                      "label": "说明"
-                    },
-                    {
-                      "field": "source",
-                      "label": "来源"
-                    }
-                  ]
-                }
-              ]
+            "force_allow_plugins": {
+              "type": "array",
+              "required": true,
+              "items": {
+                "type": "string",
+                "max_length": 200
+              }
             },
-            {
-              "type": "stack",
-              "label": "状态切换与拦截记录",
-              "children": [
-                {
-                  "type": "table",
-                  "label": "最近 30 条运行事件",
-                  "value": {
-                    "source": "status",
-                    "field": "recent_events"
-                  },
-                  "columns": [
-                    {
-                      "field": "time",
-                      "label": "时间"
-                    },
-                    {
-                      "field": "event_type",
-                      "label": "类型"
-                    },
-                    {
-                      "field": "target",
-                      "label": "对象"
-                    },
-                    {
-                      "field": "detail",
-                      "label": "详情"
-                    }
-                  ]
-                }
-              ]
+            "force_allow_commands": {
+              "type": "array",
+              "required": true,
+              "items": {
+                "type": "string",
+                "max_length": 200
+              }
             }
-          ]
+          }
+        },
+        "save_exemptions": {
+          "api": "webui_save_exemptions",
+          "version": "1",
+          "parameters": {
+            "exempt_groups": {
+              "type": "array",
+              "required": true,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "platform": {
+                    "type": "string",
+                    "max_length": 100
+                  },
+                  "type": {
+                    "type": "string",
+                    "choices": [
+                      "group"
+                    ]
+                  },
+                  "id": {
+                    "type": "string",
+                    "required": true,
+                    "max_length": 200
+                  },
+                  "name": {
+                    "type": "string",
+                    "max_length": 200
+                  }
+                }
+              }
+            },
+            "exempt_users": {
+              "type": "array",
+              "required": true,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "platform": {
+                    "type": "string",
+                    "max_length": 100
+                  },
+                  "type": {
+                    "type": "string",
+                    "choices": [
+                      "user"
+                    ]
+                  },
+                  "id": {
+                    "type": "string",
+                    "required": true,
+                    "max_length": 200
+                  },
+                  "name": {
+                    "type": "string",
+                    "max_length": 200
+                  }
+                }
+              }
+            },
+            "user_exempt_in_group": {
+              "type": "boolean",
+              "required": true
+            },
+            "exempt_platforms": {
+              "type": "array",
+              "required": true,
+              "items": {
+                "type": "string",
+                "max_length": 100
+              }
+            }
+          }
         }
-      ]
+      }
     }
   ]
 }

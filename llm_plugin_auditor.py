@@ -120,7 +120,10 @@ class PluginAuditRecord:
     display_name: str
     version: str
     plugin_dir: str = ""
+    description: str = ""
     is_adapter: bool = False
+    is_built_in: bool = False
+    loaded_in_runtime: bool = False
     uses_llm: bool = False
     decision: str = "allow"  # "block" | "allow" | "self" | "force_block" | "force_allow"
     reasons: Tuple[str, ...] = ()
@@ -137,13 +140,33 @@ class PluginAuditRecord:
             "plugin_id": self.plugin_id,
             "display_name": self.display_name or self.plugin_id,
             "version": self.version,
+            "description": self.description,
             "uses_llm": self.uses_llm,
             "should_block": self.should_block,
             "decision": self.decision,
             "is_adapter": self.is_adapter,
+            "is_built_in": self.is_built_in,
+            "loaded_in_runtime": self.loaded_in_runtime,
             "command_count": len(command_names),
             "commands": ", ".join(command_names) if command_names else "-",
             "reasons": "；".join(self.reasons) if self.reasons else "未发现大模型调用",
+        }
+
+    def to_detail_dict(self) -> Dict[str, Any]:
+        command_items = [
+            {
+                "name": comp.name,
+                "full_name": comp.full_name,
+                "enabled": comp.enabled,
+            }
+            for comp in self.components
+            if comp.component_type == "COMMAND"
+        ]
+        return {
+            **self.to_summary_dict(),
+            "command_items": command_items,
+            "capabilities": list(self.capabilities),
+            "reasons_list": list(self.reasons),
         }
 
 
@@ -187,6 +210,13 @@ def discover_plugin_roots(current_plugin_dir: Path) -> List[Path]:
     _add(repo_root / "src" / "plugins" / "built_in")
     _add(Path.cwd() / "plugins")
     _add(Path.cwd() / "src" / "plugins" / "built_in")
+
+    from .model_fallback import discover_maibot_instance_root
+
+    instance_root = discover_maibot_instance_root(current_plugin_dir)
+    if instance_root is not None:
+        _add(instance_root / "plugins")
+        _add(instance_root / "src" / "plugins" / "built_in")
 
     return roots
 
@@ -403,7 +433,9 @@ class LlmPluginAuditor:
         manifests = scan_plugin_manifests_sync(roots)
 
         # 读取 pm 别名以便命令放行匹配
-        instance_root = self._current_plugin_dir.resolve().parent.parent
+        from .model_fallback import discover_maibot_instance_root
+
+        instance_root = discover_maibot_instance_root(self._current_plugin_dir) or self._current_plugin_dir.resolve().parent.parent
         self._pm_aliases = read_pm_aliases_sync(instance_root)
 
         llm_caps = set(CORE_LLM_CAPABILITIES)
@@ -483,6 +515,10 @@ class LlmPluginAuditor:
             is_adapter = plugin_type == "adapter" or any(
                 comp.component_type == "MESSAGE_GATEWAY" for comp in components
             )
+            description = str(manifest_data.get("description") or "").strip()
+            dir_text = plugin_dir.resolve().as_posix().lower() if plugin_dir else ""
+            is_built_in = "/built_in/" in dir_text or plugin_id.startswith("maibot.")
+            loaded_in_runtime = isinstance(runtime_info, dict)
 
             reasons: List[str] = []
             for cap in declared_caps:
@@ -516,7 +552,10 @@ class LlmPluginAuditor:
                 display_name=display_name,
                 version=version,
                 plugin_dir=str(plugin_dir) if plugin_dir else "",
+                description=description,
                 is_adapter=is_adapter,
+                is_built_in=is_built_in,
+                loaded_in_runtime=loaded_in_runtime,
                 uses_llm=uses_llm,
                 decision=decision,
                 reasons=tuple(reasons),

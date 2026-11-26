@@ -1,7 +1,7 @@
 # 完整配置参考
 
-本插件配置模型定义在 [`settings.py`](../settings.py)，共包含 6 个配置分区：`[plugin]`、`[schedule]`、`[holiday]`、`[notices]`、`[plugin_guard]`、`[exemptions]`。  
-在 MaiBot WebUI「插件配置」页修改后支持热重载（`on_config_update`），无需重启即可生效。
+本插件配置模型定义在 [`settings.py`](../settings.py)，共包含 7 个配置分区：`[plugin]`、`[schedule]`、`[model_fallback]`、`[holiday]`、`[notices]`、`[plugin_guard]`、`[exemptions]`。  
+在 MaiBot WebUI「插件配置」页或自定义控制台保存后均支持热重载（`on_config_update`），无需重启即可生效。
 
 ---
 
@@ -9,8 +9,8 @@
 
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `enabled` | `bool` | `true` | 插件总开关；关闭后不再拦截任何 AI 聊天或模型调用，并恢复被临时禁用的组件。 |
-| `config_version` | `string` | `"1.0.0"` | 内部配置版本号（WebUI 中隐藏）。 |
+| `enabled` | `bool` | `true` | 插件总开关；关闭后不再拦截任何 AI 聊天或模型调用，并恢复回退前模型与被临时禁用的组件。 |
+| `config_version` | `string` | `"1.1.0"` | 内部配置版本号（WebUI 中隐藏）。 |
 
 ---
 
@@ -39,6 +39,8 @@
 | `notify_on_end` | `bool` | `true` | 离开该规则对应的静默时段时是否发送结束提示语。 |
 | `start_message` | `string` | `""` | 该规则专属开始提示语；留空使用 `[notices].default_start_message`。 |
 | `end_message` | `string` | `""` | 该规则专属结束提示语；留空使用 `[notices].default_end_message`。 |
+| `mode` | `string` | `"inherit"` | 时段生效模式：`inherit`（有可用回退模型则切模型、否则静默）、`model_fallback`（优先回退模型）、`quiet`（强制完全静默，优先级最高）。 |
+| `fallback_models` | `list[string]` | `[]` | 该规则专属回退模型名列表；留空时继承 `[model_fallback]` 全局配置。 |
 
 ### `day_scope` 可选值说明
 
@@ -51,6 +53,19 @@
 | `non_holiday` | 非法定节假日 | 除法定节假日外的所有日期。 |
 | `weekend` | 普通周末 | 周六、周日，且在启用调休识别时排除补班日。 |
 | `weekdays` | 自定义星期几 | 匹配 `weekdays` 列表指定的星期（`1`–`7`）。 |
+
+---
+
+## 2.5 `[model_fallback]` 回退模型切换（v1.1.0）
+
+| 字段 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `enabled` | `bool` | `true` | 开启且存在有效回退模型时，命中时段切换任务模型而不进行静默；关闭或无回退模型时退回静默规则。 |
+| `fallback_models` | `list[string]` | `[]` | 从 MaiBot 已注册模型中选择的回退模型名列表；WebUI 支持实时动态下拉多选。 |
+| `target_tasks` | `list[string]` | `["replyer", "planner", "utils", "memory", "learner", "fast_model"]` | 切换模型时涉及的任务节点（还可选 `vlm`）。 |
+| `switch_mode` | `string` | `"replace"` | `replace`（替换为回退模型）或 `prepend`（回退模型置顶、原模型兜底）。 |
+| `fallback_to_quiet_if_unavailable` | `bool` | `true` | 若所选回退模型均未在当前模型目录中注册或无法切换，自动降级执行静默规则。 |
+| `instance_root` | `string` | `""` | MaiBot 实例根目录覆盖路径；留空自动识别。 |
 
 ---
 

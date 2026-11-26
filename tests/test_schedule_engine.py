@@ -22,6 +22,7 @@ from plugins.ai_quiet_hours.schedule_engine import (  # noqa: E402
 from plugins.ai_quiet_hours.settings import (  # noqa: E402
     ExemptionSectionConfig,
     HolidaySectionConfig,
+    ModelFallbackSectionConfig,
     QuietHoursPluginConfig,
     ScheduleRule,
     ScheduleSectionConfig,
@@ -185,6 +186,49 @@ class TestScheduleEngine(unittest.TestCase):
         exemptions.user_exempt_in_group = False
         self.assertFalse(is_context_exempt(exemptions, platform="qq", group_id="99999", user_id="8888")[0])
         self.assertTrue(is_context_exempt(exemptions, platform="qq", group_id="", user_id="8888")[0])
+
+    def test_rule_mode_and_fallback_precedence(self) -> None:
+        dt = datetime(2026, 11, 20, 23, 30, tzinfo=TZ_CST)
+        # 1. 全局配置了回退模型 -> inherit 规则优先进入 model_fallback
+        cfg_fb = QuietHoursPluginConfig(
+            schedule=ScheduleSectionConfig(
+                rules=[ScheduleRule(name="省流夜班", start_time="23:00", end_time="07:00", day_scope="all", mode="inherit")]
+            ),
+            model_fallback=ModelFallbackSectionConfig(enabled=True, fallback_models=["deepseek-v4-flash"]),
+        )
+        ev_fb = evaluate_schedule(cfg_fb, self.calendar, dt)
+        self.assertTrue(ev_fb.is_quiet)
+        self.assertEqual(ev_fb.preferred_mode, "model_fallback")
+        self.assertEqual(ev_fb.preferred_fallback_models, ("deepseek-v4-flash",))
+
+        # 2. 若未配置回退模型 -> 退回静默规则
+        cfg_no_fb = QuietHoursPluginConfig(
+            schedule=cfg_fb.schedule,
+            model_fallback=ModelFallbackSectionConfig(enabled=True, fallback_models=[]),
+        )
+        ev_no_fb = evaluate_schedule(cfg_no_fb, self.calendar, dt)
+        self.assertEqual(ev_no_fb.preferred_mode, "quiet")
+        self.assertEqual(ev_no_fb.preferred_fallback_models, ())
+
+        # 3. 同一时刻既有 model_fallback 又有 explicit quiet 规则 -> quiet 优先（严格原则）
+        cfg_overlap = QuietHoursPluginConfig(
+            schedule=ScheduleSectionConfig(
+                rules=[
+                    ScheduleRule(name="省流夜班", start_time="22:00", end_time="08:00", day_scope="all", mode="model_fallback", fallback_models=["qwen-flash"]),
+                    ScheduleRule(name="深度休眠", start_time="23:00", end_time="06:00", day_scope="all", mode="quiet"),
+                ]
+            ),
+            model_fallback=ModelFallbackSectionConfig(enabled=True, fallback_models=["deepseek-v4-flash"]),
+        )
+        ev_overlap = evaluate_schedule(cfg_overlap, self.calendar, dt)
+        self.assertEqual(ev_overlap.preferred_mode, "quiet")
+
+    def test_default_morning_peak_start_time_is_0900(self) -> None:
+        default_cfg = QuietHoursPluginConfig()
+        morning_rule = default_cfg.schedule.rules[0]
+        self.assertEqual(morning_rule.name, "DeepSeek 早高峰")
+        self.assertEqual(morning_rule.start_time, "09:00")
+        self.assertEqual(morning_rule.end_time, "12:00")
 
 
 if __name__ == "__main__":

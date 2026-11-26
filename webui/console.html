@@ -1,0 +1,917 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AI 时段静默守卫控制台</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { padding: 20px; line-height: 1.5; }
+    main { max-width: 1180px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
+    h1, h2, h3 { margin: 0; font-family: var(--maibot-font-display); }
+    h1 { font-size: 24px; }
+    h2 { font-size: 17px; }
+    h3 { font-size: 14px; }
+    .header-row, .btn-row, .filter-row, .pill-row, .inline-add { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+    .header-row { justify-content: space-between; }
+    .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; }
+    .stat-card { padding: 14px 16px; border: 1px solid var(--maibot-border); border-radius: var(--maibot-radius); background: var(--maibot-surface); }
+    .stat-label { font-size: 12px; color: var(--maibot-muted); }
+    .stat-val { font-size: 16px; font-weight: 600; margin-top: 4px; word-break: break-word; }
+    .tabs { display: flex; flex-wrap: wrap; gap: 8px; border-bottom: 1px solid var(--maibot-border); padding-bottom: 10px; }
+    .tab-btn[data-active="true"] { background: var(--maibot-primary); color: var(--maibot-primary-foreground); }
+    .panel { display: flex; flex-direction: column; gap: 14px; }
+    .panel[hidden] { display: none !important; }
+    .two-col { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: 16px; }
+    .checklist { max-height: 360px; overflow-y: auto; border: 1px solid var(--maibot-border); border-radius: var(--maibot-radius); padding: 8px; display: flex; flex-direction: column; gap: 6px; background: var(--maibot-background); }
+    .check-item { display: flex; align-items: flex-start; gap: 10px; padding: 8px 10px; border: 1px solid var(--maibot-border); border-radius: var(--maibot-radius); background: var(--maibot-surface); cursor: pointer; }
+    .check-item:hover { filter: brightness(0.98); }
+    .check-item input[type="checkbox"] { margin-top: 3px; flex-shrink: 0; }
+    .check-main { min-width: 0; flex: 1; }
+    .check-title { font-weight: 600; font-size: 14px; word-break: break-word; }
+    .check-sub { font-size: 12px; color: var(--maibot-muted); word-break: break-word; }
+    .mono { font-family: var(--maibot-font-mono); font-size: 12px; }
+    .seg-group { display: inline-flex; border: 1px solid var(--maibot-border); border-radius: var(--maibot-radius); overflow: hidden; }
+    .seg-btn { border: 0; background: transparent; color: var(--maibot-foreground); padding: 5px 10px; cursor: pointer; font-size: 12px; }
+    .seg-btn[data-selected="true"][data-kind="auto"] { background: var(--maibot-soft); font-weight: 600; }
+    .seg-btn[data-selected="true"][data-kind="block"] { background: var(--maibot-danger); color: #fff; font-weight: 600; }
+    .seg-btn[data-selected="true"][data-kind="allow"] { background: var(--maibot-primary); color: var(--maibot-primary-foreground); font-weight: 600; }
+    .banner { padding: 10px 14px; border-radius: var(--maibot-radius); border: 1px solid var(--maibot-border); background: var(--maibot-soft); font-size: 13px; }
+    .banner-error { color: var(--maibot-danger); border-color: var(--maibot-danger); }
+    .banner-ok { border-color: var(--maibot-primary); }
+    .switch-row { display: flex; align-items: center; gap: 8px; font-size: 14px; cursor: pointer; }
+    .scroll-table { overflow-x: auto; }
+    .badge-warn { border-color: var(--maibot-danger); color: var(--maibot-danger); }
+    .grow { flex: 1; min-width: 180px; }
+    @media (max-width: 600px) { body { padding: 12px; } }
+  </style>
+</head>
+<body class="maibot-page">
+<main>
+  <div class="header-row">
+    <div>
+      <h1>AI 时段静默守卫控制台</h1>
+      <p id="status-detail" class="maibot-muted" style="margin: 4px 0 0;">正在加载运行状态…</p>
+    </div>
+    <div class="btn-row">
+      <button type="button" id="btn-refresh" class="maibot-button">刷新状态</button>
+      <button type="button" id="btn-auto" class="maibot-button maibot-button-primary">恢复自动调度</button>
+      <button type="button" id="btn-fallback-1h" class="maibot-button">切至回退模型 (1h)</button>
+      <button type="button" id="btn-quiet-1h" class="maibot-button maibot-button-danger">立即静默 (1h)</button>
+      <button type="button" id="btn-active-1h" class="maibot-button">恢复原模型 (1h)</button>
+    </div>
+  </div>
+
+  <div id="feedback" class="banner" hidden></div>
+
+  <section class="stats-grid" aria-label="实时状态摘要">
+    <div class="stat-card">
+      <div class="stat-label">当前运行状态</div>
+      <div id="stat-state" class="stat-val">-</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">今日日期识别</div>
+      <div id="stat-today" class="stat-val">-</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">下次计划切换</div>
+      <div id="stat-next" class="stat-val">-</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">已检出插件 / 已注册模型</div>
+      <div id="stat-counts" class="stat-val">-</div>
+    </div>
+  </section>
+
+  <nav class="tabs" role="tablist" aria-label="控制台分页">
+    <button type="button" class="maibot-button tab-btn" data-tab="overview" data-active="true">概览与时段规则</button>
+    <button type="button" class="maibot-button tab-btn" data-tab="models" data-active="false">回退模型切换</button>
+    <button type="button" class="maibot-button tab-btn" data-tab="plugins" data-active="false">同插件屏蔽选择</button>
+    <button type="button" class="maibot-button tab-btn" data-tab="exemptions" data-active="false">豁免群聊与用户</button>
+    <button type="button" class="maibot-button tab-btn" data-tab="holidays" data-active="false">节假日与事件日志</button>
+  </nav>
+
+  <!-- 1. 概览与时段规则 -->
+  <section id="panel-overview" class="panel">
+    <div class="maibot-card">
+      <div class="maibot-card-header">时段调度规则（当前模式策略在“插件设置”编辑，或直接在下方分页勾选回退模型/插件/豁免）</div>
+      <div class="scroll-table">
+        <table class="maibot-table">
+          <thead>
+            <tr>
+              <th>规则名称</th>
+              <th>状态</th>
+              <th>时间范围</th>
+              <th>日期范围</th>
+              <th>时段模式</th>
+              <th>专属回退模型</th>
+              <th>当前命中</th>
+            </tr>
+          </thead>
+          <tbody id="rules-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- 2. 回退模型切换 -->
+  <section id="panel-models" class="panel" hidden>
+    <div class="maibot-card" style="display:flex;flex-direction:column;gap:14px;">
+      <div class="header-row">
+        <div>
+          <h2>MaiBot 已注册模型回退设置</h2>
+          <p class="maibot-muted" style="margin:4px 0 0;">配置回退模型后，进入时段时自动切换模型且<strong>不进行静默</strong>；若未勾选或无可用回退模型，则自动按静默规则拦截。</p>
+        </div>
+        <div class="btn-row">
+          <button type="button" id="btn-rescan-models" class="maibot-button">重新读取模型目录</button>
+          <button type="button" id="btn-save-models" class="maibot-button maibot-button-primary">保存模型回退配置</button>
+        </div>
+      </div>
+
+      <div id="model-active-banner" class="banner" hidden></div>
+
+      <div class="filter-row">
+        <label class="switch-row"><input type="checkbox" id="mf-enabled"><span>启用“有回退模型时不静默、改切模型”</span></label>
+        <label class="switch-row"><input type="checkbox" id="mf-fallback-quiet"><span>回退模型不可用时自动转为静默</span></label>
+        <label class="switch-row">
+          <span>切换策略：</span>
+          <select id="mf-switch-mode" class="maibot-select">
+            <option value="replace">完全替换为回退模型 (replace)</option>
+            <option value="prepend">回退模型置顶 + 原模型兜底 (prepend)</option>
+          </select>
+        </label>
+      </div>
+
+      <div>
+        <h3 style="margin-bottom:8px;">需同步切换的 MaiBot 任务节点</h3>
+        <div id="mf-tasks-row" class="pill-row"></div>
+      </div>
+
+      <div class="filter-row">
+        <input id="model-search" class="maibot-input grow" placeholder="搜索模型名称、模型标识符或 API 服务商…">
+        <label class="switch-row"><input type="checkbox" id="model-only-llm" checked><span>仅显示对话模型 (llm)</span></label>
+        <button type="button" id="btn-clear-models" class="maibot-button">清空已选模型</button>
+      </div>
+
+      <div id="model-checklist" class="checklist"></div>
+
+      <div class="inline-add">
+        <input id="manual-model-input" class="maibot-input grow" placeholder="手动补充模型名称（可选，如暂未写入目录）">
+        <button type="button" id="btn-add-manual-model" class="maibot-button">添加到勾选</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- 3. 同插件屏蔽规则选择 -->
+  <section id="panel-plugins" class="panel" hidden>
+    <div class="maibot-card" style="display:flex;flex-direction:column;gap:14px;">
+      <div class="header-row">
+        <div>
+          <h2>当前同插件与命令守卫规则</h2>
+          <p class="maibot-muted" style="margin:4px 0 0;">直接为检测到的插件点选“自动跟随 / 强制屏蔽 / 豁免放行”，无需手动复制粘贴插件 ID。</p>
+        </div>
+        <div class="btn-row">
+          <button type="button" id="btn-rescan-plugins" class="maibot-button">重新扫描插件</button>
+          <button type="button" id="btn-save-plugins" class="maibot-button maibot-button-primary">保存插件屏蔽规则</button>
+        </div>
+      </div>
+
+      <div class="filter-row">
+        <label class="switch-row"><input type="checkbox" id="pg-enabled"><span>静默期启用大模型插件拦截</span></label>
+        <label class="switch-row">
+          <span>拦截模式：</span>
+          <select id="pg-block-mode" class="maibot-select">
+            <option value="smart">智能联动 (smart)</option>
+            <option value="hook_only">仅 Hook 拦截 (hook_only)</option>
+            <option value="disable_components">禁用组件 + Hook (disable_components)</option>
+          </select>
+        </label>
+      </div>
+
+      <div class="filter-row">
+        <input id="plugin-search" class="maibot-input grow" placeholder="按插件名称、插件 ID 或命令关键字筛选…">
+        <label class="switch-row"><input type="checkbox" id="plugin-only-llm"><span>仅看含大模型或强制规则插件</span></label>
+      </div>
+
+      <div class="scroll-table">
+        <table class="maibot-table">
+          <thead>
+            <tr>
+              <th>插件信息</th>
+              <th>类型 / 大模型判定</th>
+              <th>包含命令</th>
+              <th>守卫规则选择</th>
+            </tr>
+          </thead>
+          <tbody id="plugins-tbody"></tbody>
+        </table>
+      </div>
+
+      <div class="inline-add">
+        <input id="manual-plugin-input" class="maibot-input grow" placeholder="手动补充未知插件 ID（可选）">
+        <button type="button" id="btn-manual-block-plugin" class="maibot-button">加入强制屏蔽</button>
+        <button type="button" id="btn-manual-allow-plugin" class="maibot-button">加入豁免放行</button>
+      </div>
+
+      <div>
+        <h3 style="margin-bottom:6px;">静默期始终放行的单个命令（勾选即放行，不因所属插件被整包阻断）</h3>
+        <div id="cmd-checklist" class="checklist" style="max-height:200px;"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 4. 豁免群聊与用户 -->
+  <section id="panel-exemptions" class="panel" hidden>
+    <div class="maibot-card" style="display:flex;flex-direction:column;gap:14px;">
+      <div class="header-row">
+        <div>
+          <h2>豁免群聊、豁免用户与豁免平台</h2>
+          <p class="maibot-muted" style="margin:4px 0 0;">直接从已发现的群聊会话与用户档案中勾选，豁免对象在静默期照常响应 AI 与插件。</p>
+        </div>
+        <div class="btn-row">
+          <button type="button" id="btn-save-exemptions" class="maibot-button maibot-button-primary">保存豁免名单</button>
+        </div>
+      </div>
+
+      <div class="filter-row">
+        <label class="switch-row"><input type="checkbox" id="ex-user-in-group"><span>豁免用户在非豁免群聊中同样生效</span></label>
+        <label class="switch-row grow">
+          <span>豁免平台（逗号分隔）：</span>
+          <input id="ex-platforms" class="maibot-input grow" placeholder="例如：local, webui, internal">
+        </label>
+        <label class="switch-row">
+          <span>平台筛选：</span>
+          <select id="ex-platform-filter" class="maibot-select">
+            <option value="">全部平台</option>
+          </select>
+        </label>
+      </div>
+
+      <div class="two-col">
+        <div style="display:flex;flex-direction:column;gap:8px;">
+          <div class="header-row">
+            <h3 id="group-count-title">豁免群聊</h3>
+            <div class="btn-row">
+              <button type="button" id="btn-select-visible-groups" class="maibot-button">全选筛选</button>
+              <button type="button" id="btn-clear-groups" class="maibot-button">清空</button>
+            </div>
+          </div>
+          <input id="group-search" class="maibot-input" placeholder="搜索群名称或群号…">
+          <div id="group-checklist" class="checklist"></div>
+          <div class="inline-add">
+            <input id="manual-group-platform" class="maibot-input" style="max-width:110px;" placeholder="平台(可留空)">
+            <input id="manual-group-id" class="maibot-input grow" placeholder="手动添加群号 ID">
+            <input id="manual-group-name" class="maibot-input" style="max-width:130px;" placeholder="备注名(可选)">
+            <button type="button" id="btn-add-group" class="maibot-button">添加</button>
+          </div>
+        </div>
+
+        <div style="display:flex;flex-direction:column;gap:8px;">
+          <div class="header-row">
+            <h3 id="user-count-title">豁免用户</h3>
+            <div class="btn-row">
+              <button type="button" id="btn-select-visible-users" class="maibot-button">全选筛选</button>
+              <button type="button" id="btn-clear-users" class="maibot-button">清空</button>
+            </div>
+          </div>
+          <input id="user-search" class="maibot-input" placeholder="搜索用户昵称、备注名或账号 ID…">
+          <div id="user-checklist" class="checklist"></div>
+          <div class="inline-add">
+            <input id="manual-user-platform" class="maibot-input" style="max-width:110px;" placeholder="平台(可留空)">
+            <input id="manual-user-id" class="maibot-input grow" placeholder="手动添加用户 ID">
+            <input id="manual-user-name" class="maibot-input" style="max-width:130px;" placeholder="备注名(可选)">
+            <button type="button" id="btn-add-user" class="maibot-button">添加</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 5. 节假日与最近事件 -->
+  <section id="panel-holidays" class="panel" hidden>
+    <div class="maibot-card" style="display:flex;flex-direction:column;gap:12px;">
+      <div class="header-row">
+        <div>
+          <h2>法定节假日与调休补班识别</h2>
+          <p id="holiday-source" class="maibot-muted" style="margin:4px 0 0;">-</p>
+        </div>
+        <button type="button" id="btn-sync-holidays" class="maibot-button">立即同步年度节假日</button>
+      </div>
+      <div class="scroll-table">
+        <table class="maibot-table">
+          <thead><tr><th>日期</th><th>星期</th><th>类型</th><th>节日/调休名称</th><th>来源</th></tr></thead>
+          <tbody id="holidays-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="maibot-card">
+      <div class="maibot-card-header">最近运行事件</div>
+      <div class="scroll-table">
+        <table class="maibot-table">
+          <thead><tr><th>时间</th><th>类型</th><th>目标</th><th>详情</th></tr></thead>
+          <tbody id="events-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script>
+(() => {
+  const TASK_LABELS = {
+    replyer: '回复生成 (replyer)',
+    planner: '决策规划 (planner)',
+    utils: '通用工具 (utils)',
+    memory: '记忆整理 (memory)',
+    learner: '表达学习 (learner)',
+    fast_model: '快速小模型 (fast_model)',
+    vlm: '视觉识图 (vlm)',
+  };
+
+  let data = null;
+  let draftModels = { enabled: true, fallback_models: [], target_tasks: [], switch_mode: 'replace', fallback_to_quiet_if_unavailable: true };
+  let draftGuard = { enabled: true, block_mode: 'smart', force_block: new Set(), force_allow: new Set(), allow_commands: new Set() };
+  let draftExempt = { groups: new Map(), users: new Map(), user_exempt_in_group: true, exempt_platforms: [] };
+  let busy = false;
+
+  const targetKey = (p, id) => JSON.stringify([String(p || '').trim().toLowerCase(), String(id || '').trim()]);
+
+  function showFeedback(text, isError = false) {
+    const box = document.getElementById('feedback');
+    if (!text) { box.hidden = true; return; }
+    box.hidden = false;
+    box.textContent = text;
+    box.className = 'banner ' + (isError ? 'banner-error' : 'banner-ok');
+  }
+
+  function makeEl(tag, className, text) {
+    const el = document.createElement(tag);
+    if (className) el.className = className;
+    if (text !== undefined && text !== null) el.textContent = String(text);
+    return el;
+  }
+
+  function syncDraftsFromBootstrap(payload) {
+    data = payload;
+    const mf = (payload.config && payload.config.model_fallback) || {};
+    draftModels = {
+      enabled: Boolean(mf.enabled),
+      fallback_models: Array.isArray(mf.fallback_models) ? [...mf.fallback_models] : [],
+      target_tasks: Array.isArray(mf.target_tasks) ? [...mf.target_tasks] : ['replyer', 'planner', 'utils', 'memory', 'learner', 'fast_model'],
+      switch_mode: mf.switch_mode === 'prepend' ? 'prepend' : 'replace',
+      fallback_to_quiet_if_unavailable: mf.fallback_to_quiet_if_unavailable !== false,
+    };
+
+    const pg = (payload.config && payload.config.plugin_guard) || {};
+    draftGuard = {
+      enabled: pg.enabled !== false,
+      block_mode: pg.block_mode || 'smart',
+      force_block: new Set(Array.isArray(pg.force_block_plugins) ? pg.force_block_plugins : []),
+      force_allow: new Set(Array.isArray(pg.force_allow_plugins) ? pg.force_allow_plugins : []),
+      allow_commands: new Set(Array.isArray(pg.force_allow_commands) ? pg.force_allow_commands : []),
+    };
+
+    const ex = (payload.config && payload.config.exemptions) || {};
+    draftExempt = {
+      groups: new Map(),
+      users: new Map(),
+      user_exempt_in_group: ex.user_exempt_in_group !== false,
+      exempt_platforms: Array.isArray(ex.exempt_platforms) ? [...ex.exempt_platforms] : [],
+    };
+    for (const g of (ex.exempt_groups || [])) {
+      draftExempt.groups.set(targetKey(g.platform, g.id), { platform: g.platform || '', type: 'group', id: g.id, name: g.name || g.id });
+    }
+    for (const u of (ex.exempt_users || [])) {
+      draftExempt.users.set(targetKey(u.platform, u.id), { platform: u.platform || '', type: 'user', id: u.id, name: u.name || u.id });
+    }
+  }
+
+  function renderHeaderAndOverview() {
+    if (!data) return;
+    const st = data.status || {};
+    document.getElementById('status-detail').textContent = st.status_detail || '-';
+    document.getElementById('stat-state').textContent = st.state_label || '-';
+    document.getElementById('stat-today').textContent = st.today_summary || '-';
+    document.getElementById('stat-next').textContent = st.next_transition_label || '-';
+    document.getElementById('stat-counts').textContent =
+      `同插件 ${(data.plugins || []).length} 个（阻断 ${st.blocked_plugin_count || 0}） / 模型 ${st.registered_models_count || 0} 个`;
+
+    const tbody = document.getElementById('rules-tbody');
+    tbody.replaceChildren();
+    const rules = st.rules || [];
+    if (!rules.length) {
+      const tr = document.createElement('tr');
+      const td = makeEl('td', 'maibot-muted', '暂未配置静默时段规则');
+      td.colSpan = 7;
+      tr.append(td);
+      tbody.append(tr);
+    } else {
+      for (const r of rules) {
+        const tr = document.createElement('tr');
+        const modeText = r.mode === 'quiet' ? '强制静默' : (r.mode === 'model_fallback' ? '回退模型' : '智能跟随(有回退则不静默)');
+        tr.append(
+          makeEl('td', '', r.name),
+          makeEl('td', '', r.enabled_label),
+          makeEl('td', 'mono', r.time_range),
+          makeEl('td', '', r.day_scope),
+          makeEl('td', '', modeText),
+          makeEl('td', 'mono', (r.fallback_models && r.fallback_models.length) ? r.fallback_models.join(', ') : '继承全局'),
+          makeEl('td', '', r.active_now)
+        );
+        tbody.append(tr);
+      }
+    }
+  }
+
+  function renderModelsTab() {
+    if (!data) return;
+    document.getElementById('mf-enabled').checked = draftModels.enabled;
+    document.getElementById('mf-fallback-quiet').checked = draftModels.fallback_to_quiet_if_unavailable;
+    document.getElementById('mf-switch-mode').value = draftModels.switch_mode;
+
+    const fbSummary = (data.status && data.status.model_fallback_summary) || {};
+    const banner = document.getElementById('model-active-banner');
+    if (fbSummary.active) {
+      banner.hidden = false;
+      banner.className = 'banner banner-ok';
+      banner.textContent = `当前回退模型正在生效：${(fbSummary.applied_models || []).join(', ')}（恢复时间点或手动解除后将自动还原原始模型）`;
+    } else {
+      banner.hidden = true;
+    }
+
+    const tasksRow = document.getElementById('mf-tasks-row');
+    tasksRow.replaceChildren();
+    const taskModels = (data.catalog && data.catalog.task_models) || {};
+    const allTaskNames = Array.from(new Set([...Object.keys(TASK_LABELS), ...draftModels.target_tasks]));
+    for (const tName of allTaskNames) {
+      const label = document.createElement('label');
+      label.className = 'maibot-badge switch-row';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = draftModels.target_tasks.includes(tName);
+      cb.onchange = () => {
+        if (cb.checked && !draftModels.target_tasks.includes(tName)) draftModels.target_tasks.push(tName);
+        else if (!cb.checked) draftModels.target_tasks = draftModels.target_tasks.filter(x => x !== tName);
+      };
+      const curList = taskModels[tName];
+      const text = (TASK_LABELS[tName] || tName) + (curList && curList.length ? ` [当前:${curList.join(',')}]` : '');
+      label.append(cb, document.createTextNode(text));
+      tasksRow.append(label);
+    }
+
+    const q = document.getElementById('model-search').value.trim().toLowerCase();
+    const onlyLlm = document.getElementById('model-only-llm').checked;
+    const container = document.getElementById('model-checklist');
+    container.replaceChildren();
+
+    const catalogModels = (data.catalog && data.catalog.models) || [];
+    const knownNames = new Set(catalogModels.map(m => m.name));
+    const displayList = [...catalogModels];
+    for (const name of draftModels.fallback_models) {
+      if (!knownNames.has(name)) {
+        displayList.push({ name, model_identifier: '', model_type: 'unknown', api_provider: '未在当前目录找到', visual: false, price_in: 0, price_out: 0 });
+      }
+    }
+
+    const filtered = displayList.filter(m => {
+      if (onlyLlm && m.model_type && m.model_type !== 'llm' && m.model_type !== 'unknown') return false;
+      if (!q) return true;
+      return `${m.name} ${m.model_identifier} ${m.api_provider} ${m.model_type}`.toLowerCase().includes(q);
+    });
+
+    if (!filtered.length) {
+      container.append(makeEl('div', 'maibot-muted', (data.catalog && data.catalog.error) || '未检测到匹配的已注册模型'));
+      return;
+    }
+
+    for (const m of filtered) {
+      const row = document.createElement('label');
+      row.className = 'check-item';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = draftModels.fallback_models.includes(m.name);
+      cb.onchange = () => {
+        if (cb.checked && !draftModels.fallback_models.includes(m.name)) draftModels.fallback_models.push(m.name);
+        else if (!cb.checked) draftModels.fallback_models = draftModels.fallback_models.filter(x => x !== m.name);
+      };
+      const main = makeEl('div', 'check-main');
+      main.append(makeEl('div', 'check-title', m.name));
+      const meta = [
+        `类型: ${m.model_type || 'llm'}`,
+        m.api_provider ? `服务商: ${m.api_provider}` : '',
+        m.model_identifier ? `标识: ${m.model_identifier}` : '',
+        m.visual ? '支持视觉' : '',
+        (m.price_in || m.price_out) ? `价格 ¥${m.price_in}/¥${m.price_out}` : '',
+      ].filter(Boolean).join(' · ');
+      main.append(makeEl('div', 'check-sub', meta));
+      row.append(cb, main);
+      container.append(row);
+    }
+  }
+
+  function renderPluginsTab() {
+    if (!data) return;
+    document.getElementById('pg-enabled').checked = draftGuard.enabled;
+    document.getElementById('pg-block-mode').value = draftGuard.block_mode;
+
+    const q = document.getElementById('plugin-search').value.trim().toLowerCase();
+    const onlyLlm = document.getElementById('plugin-only-llm').checked;
+    const tbody = document.getElementById('plugins-tbody');
+    tbody.replaceChildren();
+
+    const peers = [...(data.plugins || [])];
+    const knownIds = new Set(peers.map(p => p.plugin_id));
+    for (const pid of [...draftGuard.force_block, ...draftGuard.force_allow]) {
+      if (!knownIds.has(pid)) {
+        knownIds.add(pid);
+        peers.push({ plugin_id: pid, display_name: pid, version: '-', uses_llm: false, is_built_in: false, is_adapter: false, loaded_in_runtime: false, commands: '-', command_items: [], reasons: '已保存ID（当前目录未检测到）' });
+      }
+    }
+
+    const filtered = peers.filter(p => {
+      const hasExplicit = draftGuard.force_block.has(p.plugin_id) || draftGuard.force_allow.has(p.plugin_id);
+      if (onlyLlm && !p.uses_llm && !hasExplicit) return false;
+      if (!q) return true;
+      return `${p.display_name} ${p.plugin_id} ${p.commands} ${p.reasons}`.toLowerCase().includes(q);
+    });
+
+    if (!filtered.length) {
+      const tr = document.createElement('tr');
+      const td = makeEl('td', 'maibot-muted', '当前筛选条件下未检测到其他插件');
+      td.colSpan = 4;
+      tr.append(td);
+      tbody.append(tr);
+    } else {
+      for (const p of filtered) {
+        const tr = document.createElement('tr');
+        const infoTd = document.createElement('td');
+        infoTd.append(makeEl('div', 'check-title', `${p.display_name} (${p.version || '-'})`));
+        infoTd.append(makeEl('div', 'mono maibot-muted', p.plugin_id));
+        if (p.description) infoTd.append(makeEl('div', 'check-sub', p.description));
+
+        const typeTd = document.createElement('td');
+        const originTag = p.is_built_in ? '内置' : (p.is_adapter ? '适配器' : '扩展');
+        const llmTag = p.uses_llm ? '含大模型调用' : '普通插件';
+        const loadTag = p.loaded_in_runtime ? '已加载' : '仅磁盘';
+        typeTd.append(makeEl('span', 'maibot-badge' + (p.uses_llm ? ' badge-warn' : ''), `${originTag} · ${llmTag} · ${loadTag}`));
+        typeTd.append(makeEl('div', 'check-sub', p.reasons || '-'));
+
+        const cmdTd = makeEl('td', 'mono', p.commands || '-');
+
+        const ruleTd = document.createElement('td');
+        const seg = makeEl('div', 'seg-group');
+        const curRule = draftGuard.force_allow.has(p.plugin_id) ? 'allow' : (draftGuard.force_block.has(p.plugin_id) ? 'block' : 'auto');
+        for (const [kind, label] of [['auto', '自动策略'], ['block', '强制屏蔽'], ['allow', '豁免放行']]) {
+          const btn = makeEl('button', 'seg-btn', label);
+          btn.type = 'button';
+          btn.dataset.kind = kind;
+          btn.dataset.selected = curRule === kind ? 'true' : 'false';
+          btn.onclick = () => {
+            draftGuard.force_block.delete(p.plugin_id);
+            draftGuard.force_allow.delete(p.plugin_id);
+            if (kind === 'block') draftGuard.force_block.add(p.plugin_id);
+            else if (kind === 'allow') draftGuard.force_allow.add(p.plugin_id);
+            renderPluginsTab();
+          };
+          seg.append(btn);
+        }
+        ruleTd.append(seg);
+
+        tr.append(infoTd, typeTd, cmdTd, ruleTd);
+        tbody.append(tr);
+      }
+    }
+
+    // 命令放行列表
+    const cmdBox = document.getElementById('cmd-checklist');
+    cmdBox.replaceChildren();
+    const seenCmds = new Set();
+    const cmdEntries = [];
+    for (const p of (data.plugins || [])) {
+      for (const c of (p.command_items || [])) {
+        const full = c.full_name || `${p.plugin_id}.${c.name}`;
+        if (!seenCmds.has(full)) {
+          seenCmds.add(full);
+          cmdEntries.push({ full, label: `/${c.name}`, plugin: `${p.display_name} (${p.plugin_id})` });
+        }
+      }
+    }
+    for (const val of draftGuard.allow_commands) {
+      if (!seenCmds.has(val)) {
+        seenCmds.add(val);
+        cmdEntries.push({ full: val, label: val, plugin: '已保存自定义命令' });
+      }
+    }
+    if (!cmdEntries.length) {
+      cmdBox.append(makeEl('div', 'maibot-muted', '暂无可勾选的同插件注册命令'));
+    } else {
+      for (const item of cmdEntries) {
+        const row = document.createElement('label');
+        row.className = 'check-item';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = draftGuard.allow_commands.has(item.full);
+        cb.onchange = () => {
+          if (cb.checked) draftGuard.allow_commands.add(item.full);
+          else draftGuard.allow_commands.delete(item.full);
+        };
+        const main = makeEl('div', 'check-main');
+        main.append(makeEl('div', 'check-title mono', `${item.label}  [${item.full}]`));
+        main.append(makeEl('div', 'check-sub', `所属插件：${item.plugin}`));
+        row.append(cb, main);
+        cmdBox.append(row);
+      }
+    }
+  }
+
+  function getMergedTargetPool(kind) {
+    const discovered = (data && data.targets && data.targets[kind]) || [];
+    const draftMap = draftExempt[kind];
+    const pool = new Map();
+    for (const item of discovered) {
+      pool.set(targetKey(item.platform, item.id), item);
+    }
+    for (const [k, item] of draftMap.entries()) {
+      if (!pool.has(k)) pool.set(k, item);
+    }
+    return Array.from(pool.values());
+  }
+
+  function renderExemptionsTab() {
+    if (!data) return;
+    document.getElementById('ex-user-in-group').checked = draftExempt.user_exempt_in_group;
+    document.getElementById('ex-platforms').value = draftExempt.exempt_platforms.join(', ');
+
+    const platSelect = document.getElementById('ex-platform-filter');
+    const prevPlat = platSelect.value;
+    platSelect.replaceChildren();
+    platSelect.append(new Option('全部平台', ''));
+    for (const p of ((data.targets && data.targets.platforms) || [])) {
+      platSelect.append(new Option(p, p));
+    }
+    platSelect.value = prevPlat;
+
+    const platFilter = platSelect.value.trim().toLowerCase();
+    const renderOneList = (kind, searchInputId, boxId, titleId, titlePrefix) => {
+      const q = document.getElementById(searchInputId).value.trim().toLowerCase();
+      const box = document.getElementById(boxId);
+      box.replaceChildren();
+      const draftMap = draftExempt[kind];
+      const singular = kind === 'groups' ? 'group' : 'user';
+      document.getElementById(titleId).textContent = `${titlePrefix}（已选 ${draftMap.size} 项）`;
+
+      const items = getMergedTargetPool(kind).filter(item => {
+        if (platFilter && String(item.platform || '').toLowerCase() !== platFilter) return false;
+        if (!q) return true;
+        return `${item.name} ${item.id} ${item.platform}`.toLowerCase().includes(q);
+      });
+
+      if (!items.length) {
+        box.append(makeEl('div', 'maibot-muted', '未发现匹配会话或历史档案，可在下方手动添加'));
+        return;
+      }
+
+      for (const item of items) {
+        const k = targetKey(item.platform, item.id);
+        const row = document.createElement('label');
+        row.className = 'check-item';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = draftMap.has(k);
+        cb.onchange = () => {
+          if (cb.checked) {
+            draftMap.set(k, { platform: item.platform || '', type: singular, id: item.id, name: item.name || item.id });
+          } else {
+            draftMap.delete(k);
+          }
+          document.getElementById(titleId).textContent = `${titlePrefix}（已选 ${draftMap.size} 项）`;
+        };
+        const main = makeEl('div', 'check-main');
+        main.append(makeEl('div', 'check-title', item.name || item.id));
+        const sub = `${item.platform || '全部平台'} · ${item.id}${item.source === 'person_info' ? ' · 人物档案' : (item.source === 'db' ? ' · 历史会话' : '')}`;
+        main.append(makeEl('div', 'check-sub mono', sub));
+        row.append(cb, main);
+        box.append(row);
+      }
+    };
+
+    renderOneList('groups', 'group-search', 'group-checklist', 'group-count-title', '豁免群聊');
+    renderOneList('users', 'user-search', 'user-checklist', 'user-count-title', '豁免用户');
+  }
+
+  function renderHolidaysTab() {
+    if (!data) return;
+    const st = data.status || {};
+    document.getElementById('holiday-source').textContent = st.holiday_source_summary || '-';
+
+    const hBody = document.getElementById('holidays-tbody');
+    hBody.replaceChildren();
+    const holidays = st.upcoming_holidays || [];
+    if (!holidays.length) {
+      const tr = document.createElement('tr');
+      const td = makeEl('td', 'maibot-muted', '未来 90 天暂无特殊节假日或调休补班');
+      td.colSpan = 5;
+      tr.append(td);
+      hBody.append(tr);
+    } else {
+      for (const h of holidays) {
+        const tr = document.createElement('tr');
+        tr.append(makeEl('td', 'mono', h.date), makeEl('td', '', h.weekday), makeEl('td', '', h.day_type_label), makeEl('td', '', h.holiday_name || '-'), makeEl('td', '', h.source));
+        hBody.append(tr);
+      }
+    }
+
+    const eBody = document.getElementById('events-tbody');
+    eBody.replaceChildren();
+    const events = st.recent_events || [];
+    if (!events.length) {
+      const tr = document.createElement('tr');
+      const td = makeEl('td', 'maibot-muted', '暂无事件记录');
+      td.colSpan = 4;
+      tr.append(td);
+      eBody.append(tr);
+    } else {
+      for (const ev of events) {
+        const tr = document.createElement('tr');
+        tr.append(makeEl('td', 'mono', ev.time), makeEl('td', 'mono', ev.event_type), makeEl('td', 'mono', ev.target), makeEl('td', '', ev.detail));
+        eBody.append(tr);
+      }
+    }
+  }
+
+  function renderAll() {
+    renderHeaderAndOverview();
+    renderModelsTab();
+    renderPluginsTab();
+    renderExemptionsTab();
+    renderHolidaysTab();
+  }
+
+  async function refreshAll(message = '') {
+    const payload = await maibot.query('bootstrap');
+    syncDraftsFromBootstrap(payload);
+    renderAll();
+    if (message) showFeedback(message, false);
+  }
+
+  async function runAction(name, args, successMsg) {
+    if (busy) return;
+    busy = true;
+    showFeedback('');
+    try {
+      const res = await maibot.action(name, args || {});
+      const msg = (res && res.message) || successMsg || '操作成功';
+      await refreshAll(msg);
+    } catch (err) {
+      showFeedback(err && err.message ? err.message : String(err), true);
+    } finally {
+      busy = false;
+    }
+  }
+
+  // 分页切换
+  for (const btn of document.querySelectorAll('.tab-btn')) {
+    btn.addEventListener('click', () => {
+      const targetTab = btn.dataset.tab;
+      for (const other of document.querySelectorAll('.tab-btn')) {
+        other.dataset.active = other === btn ? 'true' : 'false';
+      }
+      for (const panel of document.querySelectorAll('.panel')) {
+        panel.hidden = panel.id !== `panel-${targetTab}`;
+      }
+    });
+  }
+
+  // 顶部控制按钮
+  document.getElementById('btn-refresh').onclick = () => refreshAll('状态已刷新').catch(e => showFeedback(String(e), true));
+  document.getElementById('btn-auto').onclick = () => runAction('restore_auto', {}, '已恢复自动调度');
+  document.getElementById('btn-fallback-1h').onclick = () => runAction('force_fallback', { duration_minutes: 60, fallback_models: draftModels.fallback_models }, '已切换回退模型');
+  document.getElementById('btn-quiet-1h').onclick = () => runAction('force_quiet', { duration_minutes: 60, reason: 'WebUI 控制台手动开启' }, '已开启 AI 静默');
+  document.getElementById('btn-active-1h').onclick = () => runAction('force_active', { duration_minutes: 60 }, '已恢复 AI 原模型运行');
+
+  // 模型回退页交互
+  document.getElementById('mf-enabled').onchange = e => { draftModels.enabled = e.target.checked; };
+  document.getElementById('mf-fallback-quiet').onchange = e => { draftModels.fallback_to_quiet_if_unavailable = e.target.checked; };
+  document.getElementById('mf-switch-mode').onchange = e => { draftModels.switch_mode = e.target.value; };
+  document.getElementById('model-search').oninput = renderModelsTab;
+  document.getElementById('model-only-llm').onchange = renderModelsTab;
+  document.getElementById('btn-clear-models').onclick = () => { draftModels.fallback_models = []; renderModelsTab(); };
+  document.getElementById('btn-add-manual-model').onclick = () => {
+    const inp = document.getElementById('manual-model-input');
+    const name = inp.value.trim();
+    if (!name) return;
+    if (!draftModels.fallback_models.includes(name)) draftModels.fallback_models.push(name);
+    inp.value = '';
+    renderModelsTab();
+  };
+  document.getElementById('btn-rescan-models').onclick = () => runAction('rescan_models', {}, '模型目录已刷新');
+  document.getElementById('btn-save-models').onclick = () => runAction('save_model_fallback', {
+    enabled: draftModels.enabled,
+    fallback_models: draftModels.fallback_models,
+    target_tasks: draftModels.target_tasks,
+    switch_mode: draftModels.switch_mode,
+    fallback_to_quiet_if_unavailable: draftModels.fallback_to_quiet_if_unavailable,
+  }, '回退模型配置已保存并热更新生效');
+
+  // 插件守卫页交互
+  document.getElementById('pg-enabled').onchange = e => { draftGuard.enabled = e.target.checked; };
+  document.getElementById('pg-block-mode').onchange = e => { draftGuard.block_mode = e.target.value; };
+  document.getElementById('plugin-search').oninput = renderPluginsTab;
+  document.getElementById('plugin-only-llm').onchange = renderPluginsTab;
+  document.getElementById('btn-rescan-plugins').onclick = () => runAction('rescan_plugins', {}, '插件依赖扫描完成');
+  document.getElementById('btn-manual-block-plugin').onclick = () => {
+    const inp = document.getElementById('manual-plugin-input');
+    const pid = inp.value.trim();
+    if (!pid) return;
+    draftGuard.force_allow.delete(pid);
+    draftGuard.force_block.add(pid);
+    inp.value = '';
+    renderPluginsTab();
+  };
+  document.getElementById('btn-manual-allow-plugin').onclick = () => {
+    const inp = document.getElementById('manual-plugin-input');
+    const pid = inp.value.trim();
+    if (!pid) return;
+    draftGuard.force_block.delete(pid);
+    draftGuard.force_allow.add(pid);
+    inp.value = '';
+    renderPluginsTab();
+  };
+  document.getElementById('btn-save-plugins').onclick = () => runAction('save_plugin_guard', {
+    enabled: draftGuard.enabled,
+    block_mode: draftGuard.block_mode,
+    force_block_plugins: Array.from(draftGuard.force_block),
+    force_allow_plugins: Array.from(draftGuard.force_allow),
+    force_allow_commands: Array.from(draftGuard.allow_commands),
+  }, '同插件屏蔽规则已保存并立即生效');
+
+  // 豁免名单页交互
+  document.getElementById('ex-user-in-group').onchange = e => { draftExempt.user_exempt_in_group = e.target.checked; };
+  document.getElementById('ex-platform-filter').onchange = renderExemptionsTab;
+  document.getElementById('group-search').oninput = renderExemptionsTab;
+  document.getElementById('user-search').oninput = renderExemptionsTab;
+  document.getElementById('btn-select-visible-groups').onclick = () => {
+    const platFilter = document.getElementById('ex-platform-filter').value.trim().toLowerCase();
+    const q = document.getElementById('group-search').value.trim().toLowerCase();
+    for (const item of getMergedTargetPool('groups')) {
+      if (platFilter && String(item.platform || '').toLowerCase() !== platFilter) continue;
+      if (q && !`${item.name} ${item.id} ${item.platform}`.toLowerCase().includes(q)) continue;
+      draftExempt.groups.set(targetKey(item.platform, item.id), { platform: item.platform || '', type: 'group', id: item.id, name: item.name || item.id });
+    }
+    renderExemptionsTab();
+  };
+  document.getElementById('btn-clear-groups').onclick = () => { draftExempt.groups.clear(); renderExemptionsTab(); };
+  document.getElementById('btn-select-visible-users').onclick = () => {
+    const platFilter = document.getElementById('ex-platform-filter').value.trim().toLowerCase();
+    const q = document.getElementById('user-search').value.trim().toLowerCase();
+    for (const item of getMergedTargetPool('users')) {
+      if (platFilter && String(item.platform || '').toLowerCase() !== platFilter) continue;
+      if (q && !`${item.name} ${item.id} ${item.platform}`.toLowerCase().includes(q)) continue;
+      draftExempt.users.set(targetKey(item.platform, item.id), { platform: item.platform || '', type: 'user', id: item.id, name: item.name || item.id });
+    }
+    renderExemptionsTab();
+  };
+  document.getElementById('btn-clear-users').onclick = () => { draftExempt.users.clear(); renderExemptionsTab(); };
+  document.getElementById('btn-add-group').onclick = () => {
+    const p = document.getElementById('manual-group-platform').value.trim();
+    const id = document.getElementById('manual-group-id').value.trim();
+    const name = document.getElementById('manual-group-name').value.trim() || id;
+    if (!id) return;
+    draftExempt.groups.set(targetKey(p, id), { platform: p, type: 'group', id, name });
+    document.getElementById('manual-group-id').value = '';
+    document.getElementById('manual-group-name').value = '';
+    renderExemptionsTab();
+  };
+  document.getElementById('btn-add-user').onclick = () => {
+    const p = document.getElementById('manual-user-platform').value.trim();
+    const id = document.getElementById('manual-user-id').value.trim();
+    const name = document.getElementById('manual-user-name').value.trim() || id;
+    if (!id) return;
+    draftExempt.users.set(targetKey(p, id), { platform: p, type: 'user', id, name });
+    document.getElementById('manual-user-id').value = '';
+    document.getElementById('manual-user-name').value = '';
+    renderExemptionsTab();
+  };
+  document.getElementById('btn-save-exemptions').onclick = () => {
+    const platforms = document.getElementById('ex-platforms').value
+      .split(/[,\n，]+/)
+      .map(s => s.trim())
+      .filter(Boolean);
+    return runAction('save_exemptions', {
+      exempt_groups: Array.from(draftExempt.groups.values()),
+      exempt_users: Array.from(draftExempt.users.values()),
+      user_exempt_in_group: draftExempt.user_exempt_in_group,
+      exempt_platforms: platforms,
+    }, '豁免群聊与用户名单已保存并热更新生效');
+  };
+
+  // 节假日页交互
+  document.getElementById('btn-sync-holidays').onclick = () => runAction('sync_holidays', {}, '年度节假日已同步');
+
+  maibot.ready
+    .then(() => refreshAll())
+    .catch(err => showFeedback('初始化失败：' + String(err), true));
+})();
+</script>
+</body>
+</html>

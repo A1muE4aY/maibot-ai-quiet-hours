@@ -86,10 +86,11 @@ def _date_at_minutes(anchor_date: date, total_minutes: int, tz: Optional[tzinfo]
 class ManualOverride:
     """管理员通过指令或 WebUI 施加的手动覆盖状态。"""
 
-    mode: Literal["force_quiet", "force_active"]
+    mode: Literal["force_quiet", "force_active", "force_fallback"]
     reason: str = ""
     created_at: datetime = field(default_factory=lambda: datetime.now().astimezone())
     expires_at: Optional[datetime] = None
+    fallback_models: Tuple[str, ...] = ()
 
     def is_expired(self, now: datetime) -> bool:
         if self.expires_at is None:
@@ -102,6 +103,7 @@ class ManualOverride:
             "reason": self.reason,
             "created_at": self.created_at.isoformat(timespec="seconds"),
             "expires_at": self.expires_at.isoformat(timespec="seconds") if self.expires_at else None,
+            "fallback_models": list(self.fallback_models),
         }
 
 
@@ -118,7 +120,7 @@ class ActiveRuleMatch:
 
 @dataclass(frozen=True)
 class ScheduleEvaluation:
-    """某一时刻的完整静默状态评估结果。"""
+    """某一时刻的完整时段与模式评估结果。"""
 
     evaluated_at: datetime
     is_quiet: bool
@@ -129,6 +131,8 @@ class ScheduleEvaluation:
     next_transition_at: Optional[datetime] = None
     manual_override: Optional[ManualOverride] = None
     reason: str = ""
+    preferred_mode: Literal["normal", "quiet", "model_fallback"] = "normal"
+    preferred_fallback_models: Tuple[str, ...] = ()
 
     @property
     def primary_rule(self) -> Optional[ScheduleRule]:
@@ -139,6 +143,8 @@ class ScheduleEvaluation:
         if self.manual_override is not None:
             if self.manual_override.mode == "force_quiet":
                 return self.manual_override.reason or "手动开启静默"
+            if self.manual_override.mode == "force_fallback":
+                return self.manual_override.reason or "手动切换回退模型"
             return self.manual_override.reason or "手动恢复运行"
         if not self.matched_rules:
             return "无"
@@ -156,7 +162,7 @@ class ScheduleEvaluation:
             if self.effective_end_dt.date() != self.evaluated_at.date():
                 return self.effective_end_dt.strftime("%m-%d %H:%M")
             return self.effective_end_dt.strftime("%H:%M")
-        if self.manual_override is not None and self.manual_override.mode == "force_quiet":
+        if self.manual_override is not None and self.manual_override.mode in {"force_quiet", "force_fallback"}:
             return "手动恢复前"
         return "未知"
 
@@ -263,6 +269,37 @@ def _merge_intervals(intervals: List[Tuple[datetime, datetime]]) -> List[Tuple[d
     return merged
 
 
+def _resolve_window_fallback_preference(
+    config: QuietHoursPluginConfig,
+    matched: Tuple[ActiveRuleMatch, ...],
+) -> Tuple[Literal["quiet", "model_fallback"], Tuple[str, ...]]:
+    """根据命中规则与全局回退模型配置，解析当前时段期望模式（回退模型优先或强制静默）。"""
+    # 若任一命中规则显式要求完全静默，则优先按最严格的静默规则处理
+    if any(match.rule.mode == "quiet" for match in matched):
+        return "quiet", ()
+
+    rule_models: List[str] = []
+    seen = set()
+    for match in matched:
+        for model_name in match.rule.fallback_models:
+            cleaned = str(model_name or "").strip()
+            if cleaned and cleaned not in seen:
+                seen.add(cleaned)
+                rule_models.append(cleaned)
+
+    if rule_models:
+        return "model_fallback", tuple(rule_models)
+
+    if config.model_fallback.enabled and config.model_fallback.fallback_models:
+        global_models = tuple(
+            str(m).strip() for m in config.model_fallback.fallback_models if str(m).strip()
+        )
+        if global_models:
+            return "model_fallback", global_models
+
+    return "quiet", ()
+
+
 def evaluate_schedule(
     config: QuietHoursPluginConfig,
     calendar: HolidayCalendar,
@@ -271,7 +308,7 @@ def evaluate_schedule(
     manual_override: Optional[ManualOverride] = None,
     lookahead_days: int = 14,
 ) -> ScheduleEvaluation:
-    """评估指定时刻是否处于 AI 静默时段，并计算恢复时间与下次切换时刻。"""
+    """评估指定时刻是否处于 AI 静默时段，并计算期望模式（模型回退 / 静默）、恢复时间与下次切换时刻。"""
     current = now if now is not None else now_in_timezone(config.schedule.timezone)
     tz = current.tzinfo
     today_info = calendar.classify(current.date(), config.holiday)
@@ -314,6 +351,25 @@ def evaluate_schedule(
                 next_transition_at=active_override.expires_at,
                 manual_override=active_override,
                 reason=active_override.reason or "管理员手动开启 AI 静默",
+                preferred_mode="quiet",
+                preferred_fallback_models=(),
+            )
+        if active_override.mode == "force_fallback":
+            override_models = active_override.fallback_models or tuple(
+                str(m).strip() for m in config.model_fallback.fallback_models if str(m).strip()
+            )
+            return ScheduleEvaluation(
+                evaluated_at=current,
+                is_quiet=True,
+                today_info=today_info,
+                matched_rules=matched,
+                effective_start_dt=active_override.created_at,
+                effective_end_dt=active_override.expires_at,
+                next_transition_at=active_override.expires_at,
+                manual_override=active_override,
+                reason=active_override.reason or "管理员手动切换至回退模型",
+                preferred_mode="model_fallback" if override_models else "quiet",
+                preferred_fallback_models=override_models,
             )
         return ScheduleEvaluation(
             evaluated_at=current,
@@ -325,9 +381,12 @@ def evaluate_schedule(
             next_transition_at=active_override.expires_at or next_scheduled_start,
             manual_override=active_override,
             reason=active_override.reason or "管理员手动恢复 AI 运行",
+            preferred_mode="normal",
+            preferred_fallback_models=(),
         )
 
     if scheduled_start is not None and scheduled_end is not None:
+        pref_mode, pref_models = _resolve_window_fallback_preference(config, matched)
         return ScheduleEvaluation(
             evaluated_at=current,
             is_quiet=True,
@@ -338,6 +397,8 @@ def evaluate_schedule(
             next_transition_at=scheduled_end,
             manual_override=None,
             reason=f"命中静默规则：{', '.join(match.rule.name for match in matched)}",
+            preferred_mode=pref_mode,
+            preferred_fallback_models=pref_models,
         )
 
     return ScheduleEvaluation(
@@ -350,6 +411,8 @@ def evaluate_schedule(
         next_transition_at=next_scheduled_start,
         manual_override=None,
         reason="当前处于正常 AI 运行时段",
+        preferred_mode="normal",
+        preferred_fallback_models=(),
     )
 
 
@@ -360,7 +423,7 @@ def render_notice_template(
     previous_evaluation: Optional[ScheduleEvaluation] = None,
     extra: Optional[Dict[str, Any]] = None,
 ) -> str:
-    """安全渲染提示语模板，支持规则名、时间、日期类型与节假日变量。"""
+    """安全渲染提示语模板，支持规则名、时间、日期类型、节假日与回退模型变量。"""
     source_eval = previous_evaluation if (not evaluation.is_quiet and previous_evaluation is not None) else evaluation
     values: Dict[str, str] = {
         "rule_name": source_eval.rule_names,
@@ -372,6 +435,7 @@ def render_notice_template(
         "day_type": evaluation.today_info.label,
         "holiday_name": evaluation.today_info.holiday_name,
         "reason": evaluation.reason,
+        "fallback_models": ", ".join(source_eval.preferred_fallback_models) or "无",
     }
     if extra:
         for key, val in extra.items():

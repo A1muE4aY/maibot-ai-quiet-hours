@@ -6,10 +6,33 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, ClassVar, Dict, List, Optional
 
+import importlib.util
+import os
 import sys
 import types
 
 from pydantic import BaseModel, Field
+
+
+def ensure_standalone_package_alias() -> Path:
+    """在独立项目目录（如 ``ai-quiet-hours``）中运行测试时，确保 ``plugins.ai_quiet_hours`` 指向当前项目目录。"""
+    project_root = Path(__file__).resolve().parents[1]
+    if "plugins" not in sys.modules:
+        plugins_pkg = types.ModuleType("plugins")
+        plugins_pkg.__path__ = [str(project_root.parent)]  # type: ignore[attr-defined]
+        sys.modules["plugins"] = plugins_pkg
+    if "plugins.ai_quiet_hours" not in sys.modules:
+        init_file = project_root / "__init__.py"
+        spec = importlib.util.spec_from_file_location(
+            "plugins.ai_quiet_hours",
+            init_file,
+            submodule_search_locations=[str(project_root)],
+        )
+        if spec is not None and spec.loader is not None:
+            mod = importlib.util.module_from_spec(spec)
+            sys.modules["plugins.ai_quiet_hours"] = mod
+            spec.loader.exec_module(mod)
+    return project_root
 
 
 def ensure_maibot_sdk_available() -> None:
@@ -181,6 +204,54 @@ def ensure_maibot_sdk_available() -> None:
         async def on_config_update(self, scope: str, config_data: Dict[str, object], version: str) -> None:
             pass
 
+        def get_webui_config_schema(
+            self,
+            *,
+            plugin_id: str = "",
+            plugin_name: str = "",
+            plugin_version: str = "",
+            plugin_description: str = "",
+            plugin_author: str = "",
+        ) -> Dict[str, Any]:
+            """构建与真实 maibot_sdk / dashboard plugin-config.tsx 兼容的测试配置 Schema。"""
+            del plugin_id, plugin_name, plugin_version, plugin_description, plugin_author
+            if self.config_model is None:
+                return {}
+            sections: Dict[str, Any] = {}
+            for section_name, field_info in self.config_model.model_fields.items():
+                annotation = field_info.annotation
+                if isinstance(annotation, type) and issubclass(annotation, PluginConfigBase):
+                    fields_schema: Dict[str, Any] = {}
+                    for sub_name, sub_field in annotation.model_fields.items():
+                        extra = dict(sub_field.json_schema_extra or {}) if isinstance(sub_field.json_schema_extra, dict) else {}
+                        sub_ann = sub_field.annotation
+                        field_type = "string"
+                        if sub_ann is bool:
+                            field_type = "boolean"
+                        elif sub_ann in (int, float):
+                            field_type = "number"
+                        elif getattr(sub_ann, "__origin__", None) in (list, List):
+                            field_type = "array"
+                        ui_type = extra.get("x-widget") or (
+                            "switch" if field_type == "boolean" else ("list" if field_type == "array" else "text")
+                        )
+                        fields_schema[sub_name] = {
+                            "name": sub_name,
+                            "type": field_type,
+                            "label": extra.get("label", sub_name),
+                            "description": sub_field.description or "",
+                            "hint": extra.get("hint", ""),
+                            "hidden": bool(extra.get("hidden", False)),
+                            "ui_type": ui_type,
+                            "choices": extra.get("choices"),
+                        }
+                    sections[section_name] = {
+                        "name": section_name,
+                        "title": getattr(annotation, "__ui_label__", section_name),
+                        "fields": fields_schema,
+                    }
+            return {"schema_version": 2, "sections": sections}
+
     types_mod.HookMode = HookMode
     types_mod.HookOrder = HookOrder
     types_mod.ErrorPolicy = ErrorPolicy
@@ -219,4 +290,22 @@ def ensure_host_test_deps_available() -> None:
 
 
 def get_maibot_root() -> Path:
-    return Path(__file__).resolve().parents[3]
+    env_root = str(os.environ.get("MAIBOT_ROOT", "") or "").strip()
+    if env_root:
+        candidate = Path(env_root).expanduser().resolve()
+        if (candidate / "src" / "plugin_runtime").is_dir():
+            return candidate
+    here = Path(__file__).resolve()
+    for base in here.parents:
+        if (base / "src" / "plugin_runtime").is_dir():
+            return base
+        source_dir = base / "source"
+        if source_dir.is_dir():
+            for child in sorted(source_dir.iterdir(), reverse=True):
+                candidate = child / "MaiBot-main"
+                if (candidate / "src" / "plugin_runtime").is_dir():
+                    return candidate
+    return here.parents[3]
+
+
+ensure_standalone_package_alias()

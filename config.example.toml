@@ -1,6 +1,6 @@
 [plugin]
 enabled = true
-config_version = "1.0.0"
+config_version = "1.1.0"
 
 [schedule]
 timezone = ""
@@ -11,7 +11,7 @@ block_background_emoji_maintenance = true
 [[schedule.rules]]
 name = "DeepSeek 早高峰"
 enabled = true
-start_time = "08:00"
+start_time = "09:00"
 end_time = "12:00"
 day_scope = "workday"
 weekdays = [
@@ -26,6 +26,8 @@ notify_on_start = true
 notify_on_end = true
 start_message = ""
 end_message = ""
+mode = "inherit"
+fallback_models = []
 
 [[schedule.rules]]
 name = "DeepSeek 午高峰"
@@ -45,6 +47,25 @@ notify_on_start = true
 notify_on_end = true
 start_message = ""
 end_message = ""
+mode = "inherit"
+fallback_models = []
+
+[model_fallback]
+enabled = true
+# 在 MaiBot 中已注册的模型名列表（例如 ["deepseek-v4-flash"]）。
+# 填写后进入规则时段将切换为对应模型且不进行静默；留空或无可用模型时自动按静默规则拦截。
+fallback_models = []
+target_tasks = [
+    "replyer",
+    "planner",
+    "utils",
+    "memory",
+    "learner",
+    "fast_model",
+]
+switch_mode = "replace"
+fallback_to_quiet_if_unavailable = true
+instance_root = ""
 
 [holiday]
 enabled = true
@@ -73,6 +94,8 @@ blocked_chat_reply = ""
 only_reply_chat_when_mentioned_or_private = true
 blocked_reply_cooldown_seconds = 300
 blocked_plugin_reply = "⏸️ 当前处于 AI 静默时段（{rule_name}，预计 {end_time} 恢复），命令 /{command_name} 所属插件（{plugin_name}）依赖大模型能力，已暂时阻断。"
+fallback_enter_notice = ""
+fallback_exit_notice = ""
 
 [plugin_guard]
 enabled = true

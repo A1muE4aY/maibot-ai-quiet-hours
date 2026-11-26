@@ -22,11 +22,13 @@ MAIBOT_ROOT = get_maibot_root()
 if str(MAIBOT_ROOT) not in sys.path:
     sys.path.insert(0, str(MAIBOT_ROOT))
 
+from plugins.ai_quiet_hours import plugin as plugin_module  # noqa: E402
 from plugins.ai_quiet_hours.plugin import AIQuietHoursPlugin, create_plugin  # noqa: E402
 from plugins.ai_quiet_hours.settings import (  # noqa: E402
     ExemptionSectionConfig,
     GroupTarget,
     HolidaySectionConfig,
+    ModelFallbackSectionConfig,
     NoticeSectionConfig,
     PluginGuardSectionConfig,
     QuietHoursPluginConfig,
@@ -40,7 +42,7 @@ from src.plugin_runtime.runner.manifest_validator import ManifestValidator  # no
 from src.plugin_runtime.webui_schema import load_webui_extension  # noqa: E402
 
 TZ_CST = timezone(timedelta(hours=8))
-PLUGIN_DIR = MAIBOT_ROOT / "plugins" / "ai_quiet_hours"
+PLUGIN_DIR = Path(__file__).resolve().parents[1]
 
 
 def _make_ctx(tmp_dir: Path, streams: list[dict], plugins: dict) -> SimpleNamespace:
@@ -543,6 +545,9 @@ class TestHostContractAndBehavior(unittest.TestCase):
                     ("/节假日查询 2026-10-01", "quiet_holiday"),
                     ("/quiet plugins", "quiet_plugins"),
                     ("/模型插件检查", "quiet_plugins"),
+                    ("/quiet fallback", "quiet_fallback"),
+                    ("/quiet fallback deepseek-v4-flash", "quiet_fallback"),
+                    ("/回退模型 deepseek-v4-flash", "quiet_fallback"),
                     ("/quiet on", "quiet_on"),
                     ("/quiet on 60 夜间维护", "quiet_on"),
                     ("/quiet off 30", "quiet_off"),
@@ -556,6 +561,247 @@ class TestHostContractAndBehavior(unittest.TestCase):
                     self.assertEqual(match[0].name, expected_name)
 
                 await plugin.on_unload()
+
+        asyncio.run(scenario())
+
+    def test_v110_model_fallback_mode_and_selectable_rules(self) -> None:
+        sample_model_toml = """
+[inner]
+version = "1.7.0"
+
+[[api_providers]]
+name = "DeepSeek"
+base_url = "https://api.deepseek.com"
+api_key = "sk-test-secret"
+client_type = "openai"
+
+[[models]]
+model_identifier = "deepseek-chat"
+name = "deepseek-v4-pro"
+model_type = "llm"
+api_provider = "DeepSeek"
+visual = false
+price_in = 12.0
+price_out = 24.0
+
+[[models]]
+model_identifier = "deepseek-flash"
+name = "deepseek-v4-flash"
+model_type = "llm"
+api_provider = "DeepSeek"
+visual = false
+price_in = 1.0
+price_out = 2.0
+
+[model_task_config.replyer]
+model_list = ["deepseek-v4-pro"]
+
+[model_task_config.planner]
+model_list = ["deepseek-v4-pro"]
+
+[model_task_config.utils]
+model_list = ["deepseek-v4-pro"]
+
+[model_task_config.fast_model]
+model_list = []
+"""
+
+        async def scenario() -> None:
+            with tempfile.TemporaryDirectory() as tmp:
+                tmp_path = Path(tmp)
+                instance_root = tmp_path / "instance"
+                (instance_root / "config").mkdir(parents=True)
+                model_cfg_path = instance_root / "config" / "model_config.toml"
+                model_cfg_path.write_text(sample_model_toml, encoding="utf-8")
+
+                plugins_root = tmp_path / "plugins"
+                peer_dir = plugins_root / "demo_weather"
+                peer_dir.mkdir(parents=True)
+                (peer_dir / "_manifest.json").write_text(
+                    json.dumps(
+                        {
+                            "manifest_version": 2,
+                            "id": "demo.weather",
+                            "version": "1.2.0",
+                            "name": "天气助手",
+                            "description": "查询天气",
+                            "capabilities": ["llm.generate"],
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+
+                peer_plain = plugins_root / "demo_ping"
+                peer_plain.mkdir(parents=True)
+                (peer_plain / "_manifest.json").write_text(
+                    json.dumps(
+                        {
+                            "manifest_version": 2,
+                            "id": "demo.ping",
+                            "version": "1.0.0",
+                            "name": "Ping 工具",
+                            "description": "纯工具插件",
+                            "capabilities": [],
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+
+                streams = [
+                    {"session_id": "s_g1", "platform": "qq", "group_id": "888001", "group_name": "测试交流群", "is_group_session": True},
+                    {"session_id": "s_u1", "platform": "qq", "user_id": "777001", "user_nickname": "小明", "is_group_session": False},
+                ]
+                plugins_map = {
+                    "demo.weather": {
+                        "plugin_id": "demo.weather",
+                        "display_name": "天气助手",
+                        "version": "1.2.0",
+                        "components": [
+                            {"name": "weather", "full_name": "demo.weather.weather", "type": "COMMAND", "enabled": True, "metadata": {}},
+                        ],
+                    },
+                    "demo.ping": {
+                        "plugin_id": "demo.ping",
+                        "display_name": "Ping 工具",
+                        "version": "1.0.0",
+                        "components": [],
+                    },
+                }
+
+                ctx = _make_ctx(tmp_path / "plugin_runtime", streams, plugins_map)
+                async def fake_cap(cap_name: str, **kwargs):
+                    if cap_name == "database.query":
+                        if kwargs.get("model_name") == "PersonInfo":
+                            return [{"platform": "qq", "user_id": "999002", "user_nickname": "群友小红", "person_name": "小红"}]
+                        return []
+                    return {"success": True}
+                ctx.call_capability = AsyncMock(side_effect=fake_cap)
+
+                plugin = AIQuietHoursPlugin()
+                cfg = QuietHoursPluginConfig(
+                    schedule=ScheduleSectionConfig(
+                        rules=[ScheduleRule(name="全天测试时段", enabled=True, start_time="00:00", end_time="24:00", day_scope="all")]
+                    ),
+                    model_fallback=ModelFallbackSectionConfig(
+                        enabled=True,
+                        fallback_models=["deepseek-v4-flash"],
+                        fallback_to_quiet_if_unavailable=True,
+                        instance_root=str(instance_root),
+                    ),
+                    holiday=HolidaySectionConfig(enable_online_sync=False),
+                    plugin_guard=PluginGuardSectionConfig(enable_ast_code_scan=False),
+                    exemptions=ExemptionSectionConfig(
+                        exempt_groups=[GroupTarget(platform="qq", id="888001", name="测试交流群")],
+                        exempt_platforms=["local"],
+                    ),
+                )
+                plugin.set_plugin_config(cfg.model_dump())
+                plugin._set_context(ctx)
+
+                config_toml_path = tmp_path / "plugin_config.toml"
+                orig_resolver = plugin_module._resolve_self_config_path
+                plugin_module._resolve_self_config_path = lambda _dir: config_toml_path
+                try:
+                    # 模拟扫描自定义插件目录
+                    orig_audit = plugin._auditor.audit_sync
+                    plugin._auditor.audit_sync = lambda rp, gc, **kw: orig_audit(rp, gc, plugin_roots=[plugins_root], **kw)
+
+                    await plugin.on_load()
+
+                    # 1. 有可用回退模型时：不静默，已切至 deepseek-v4-flash
+                    status = await plugin.api_webui_status()
+                    self.assertEqual(status["mode"], "model_fallback")
+                    self.assertFalse(status["is_quiet"])
+                    self.assertTrue(status["is_fallback"])
+                    self.assertEqual(status["fallback_models"], ["deepseek-v4-flash"])
+                    # 没有因静默拦截普通聊天和LLM插件命令
+                    after_res = await plugin.handle_after_process(message=_msg(session_id="s_u1", group_id="", user_id="777001", text="在吗"))
+                    self.assertEqual(after_res["action"], "continue")
+                    cmd_res = await plugin.handle_command_before_execute(
+                        message=_msg(session_id="s_u1", user_id="777001", text="/weather"),
+                        command_name="weather",
+                        plugin_id="demo.weather",
+                    )
+                    self.assertEqual(cmd_res["action"], "continue")
+                    # Replyer before_request 立即注入回退模型（非豁免），豁免群保留原模型
+                    reply_non_exempt = await plugin.handle_replyer_before_request(session_id="s_u1", model_name="")
+                    self.assertEqual(reply_non_exempt["modified_kwargs"]["model_name"], "deepseek-v4-flash")
+                    reply_exempt = await plugin.handle_replyer_before_request(session_id="s_g1", model_name="")
+                    self.assertEqual(reply_exempt["modified_kwargs"]["model_name"], "deepseek-v4-pro")
+
+                    # model_config.toml 确实已被切换，且不含 sk-test-secret 暴露
+                    import tomllib
+                    live_disk = tomllib.loads(model_cfg_path.read_text(encoding="utf-8"))
+                    self.assertEqual(live_disk["model_task_config"]["replyer"]["model_list"], ["deepseek-v4-flash"])
+                    self.assertEqual(live_disk["model_task_config"]["planner"]["model_list"], ["deepseek-v4-flash"])
+
+                    # 2. 动态配置 Schema 注入可选择列表（插件/模型/命令/任务）
+                    schema = plugin.get_webui_config_schema()
+                    fb_field = schema["sections"]["model_fallback"]["fields"]["fallback_models"]
+                    self.assertEqual(fb_field["ui_type"], "select")
+                    self.assertTrue(fb_field["multiple"])
+                    self.assertIn("deepseek-v4-flash", fb_field["choices"])
+                    self.assertIn("deepseek-v4-pro", fb_field["choices"])
+                    guard_block_field = schema["sections"]["plugin_guard"]["fields"]["force_block_plugins"]
+                    self.assertEqual(guard_block_field["ui_type"], "select")
+                    self.assertTrue(guard_block_field["multiple"])
+                    self.assertIn("demo.weather", guard_block_field["choices"])
+                    self.assertIn("demo.ping", guard_block_field["choices"])
+                    cmd_allow_field = schema["sections"]["plugin_guard"]["fields"]["force_allow_commands"]
+                    self.assertIn("demo.weather.weather", cmd_allow_field["choices"])
+
+                    # 3. WebUI bootstrap 聚合模型、插件与群聊/用户列表（含 PersonInfo 小红），以及保存接口写盘生效
+                    boot = await plugin.api_webui_console_bootstrap()
+                    self.assertTrue(boot["success"])
+                    user_ids = {u["id"] for u in boot["targets"]["users"]}
+                    self.assertIn("999002", user_ids)
+                    self.assertIn("777001", user_ids)
+
+                    save_guard = await plugin.api_webui_save_plugin_guard(
+                        enabled=True,
+                        block_mode="hook_only",
+                        force_block_plugins=["demo.ping"],
+                        force_allow_plugins=[],
+                        force_allow_commands=[],
+                    )
+                    self.assertTrue(save_guard["success"])
+                    self.assertIn("demo.ping", plugin.config.plugin_guard.force_block_plugins)
+
+                    save_ex = await plugin.api_webui_save_exemptions(
+                        exempt_groups=[{"platform": "qq", "type": "group", "id": "888001", "name": "测试交流群"}],
+                        exempt_users=[{"platform": "qq", "type": "user", "id": "999002", "name": "小红"}],
+                        user_exempt_in_group=True,
+                        exempt_platforms=["local"],
+                    )
+                    self.assertTrue(save_ex["success"])
+                    self.assertEqual(plugin.config.exemptions.exempt_users[0].id, "999002")
+
+                    # 4. 清空或配为不存在的回退模型 -> 自动降级回静默规则，同时还原 model_config.toml
+                    save_empty_fb = await plugin.api_webui_save_model_fallback(
+                        enabled=True,
+                        fallback_models=[],
+                        target_tasks=["replyer", "planner", "utils"],
+                        switch_mode="replace",
+                        fallback_to_quiet_if_unavailable=True,
+                    )
+                    self.assertTrue(save_empty_fb["success"])
+                    self.assertEqual(save_empty_fb["status"]["mode"], "quiet")
+                    self.assertTrue(save_empty_fb["status"]["is_quiet"])
+
+                    restored_disk = tomllib.loads(model_cfg_path.read_text(encoding="utf-8"))
+                    self.assertEqual(restored_disk["model_task_config"]["replyer"]["model_list"], ["deepseek-v4-pro"])
+
+                    blocked_res = await plugin.handle_after_process(message=_msg(session_id="s_u1", group_id="", user_id="777001", text="在吗"))
+                    self.assertEqual(blocked_res["action"], "abort")
+                    # 新增豁免的 999002 仍可放行
+                    exempt_user_res = await plugin.handle_after_process(
+                        message=_msg(session_id="s_u2", group_id="", user_id="999002", text="在吗")
+                    )
+                    self.assertEqual(exempt_user_res["action"], "continue")
+
+                    await plugin.on_unload()
+                finally:
+                    plugin_module._resolve_self_config_path = orig_resolver
 
         asyncio.run(scenario())
 

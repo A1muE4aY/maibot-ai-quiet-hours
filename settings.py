@@ -37,6 +37,35 @@ PluginBlockMode = Literal[
     "disable_components",
 ]
 
+RuleMode = Literal[
+    "inherit",
+    "model_fallback",
+    "quiet",
+]
+
+ModelSwitchMode = Literal[
+    "replace",
+    "prepend",
+]
+
+
+def _normalize_string_list(value: Any) -> List[str]:
+    if value is None:
+        return []
+    raw_items: List[Any]
+    if isinstance(value, str):
+        raw_items = re.split(r"[\n,，]+", value)
+    elif isinstance(value, (list, tuple, set)):
+        raw_items = list(value)
+    else:
+        return []
+    deduped: List[str] = []
+    for item in raw_items:
+        text = str(item or "").strip()
+        if text and text not in deduped:
+            deduped.append(text)
+    return deduped
+
 
 def _normalize_target_input(value: Any, target_type: Literal["group", "user"]) -> Any:
     """兼容纯字符串或 ``platform:id`` 写法，转换为结构化目标字典。"""
@@ -166,6 +195,25 @@ class ScheduleRule(PluginConfigBase):
         description="该规则专属的结束提示语；留空使用全局默认结束提示语。",
         json_schema_extra={"label": "专属结束提示语", "x-widget": "textarea"},
     )
+    mode: RuleMode = Field(
+        default="inherit",
+        description=(
+            "该时段生效行为：inherit=若配置了有效回退模型则切换模型、否则静默；"
+            "model_fallback=优先切换至回退模型（无可用模型时仍按静默规则）；"
+            "quiet=即使全局配了回退模型，此规则也强制完全静默。"
+        ),
+        json_schema_extra={"label": "时段模式", "x-widget": "select"},
+    )
+    fallback_models: List[str] = Field(
+        default_factory=list,
+        description="该规则专属的回退模型名列表；留空则继承全局[模型回退切换]配置。",
+        json_schema_extra={"label": "规则专属回退模型（可选）"},
+    )
+
+    @field_validator("fallback_models", mode="before")
+    @classmethod
+    def coerce_rule_fallback_models(cls, value: Any) -> List[str]:
+        return _normalize_string_list(value)
 
     @field_validator("name")
     @classmethod
@@ -213,7 +261,7 @@ class PluginSectionConfig(PluginConfigBase):
         json_schema_extra={"label": "启用插件", "x-widget": "switch"},
     )
     config_version: str = Field(
-        default="1.0.0",
+        default="1.1.0",
         description="插件配置版本。",
         json_schema_extra={"hidden": True},
     )
@@ -253,7 +301,7 @@ class ScheduleSectionConfig(PluginConfigBase):
             ScheduleRule(
                 name="DeepSeek 早高峰",
                 enabled=True,
-                start_time="08:00",
+                start_time="09:00",
                 end_time="12:00",
                 day_scope="workday",
                 weekdays=[1, 2, 3, 4, 5],
@@ -282,12 +330,64 @@ class ScheduleSectionConfig(PluginConfigBase):
     )
 
 
+class ModelFallbackSectionConfig(PluginConfigBase):
+    """回退模型切换配置（优先使用已注册模型代替完全静默）。"""
+
+    __ui_label__: ClassVar[str] = "回退模型切换"
+    __ui_icon__: ClassVar[str] = "cpu"
+    __ui_order__: ClassVar[int] = 2
+
+    enabled: bool = Field(
+        default=True,
+        description=(
+            "命中静默时段规则时，若下方设置了有效的 MaiBot 已注册回退模型，"
+            "则切换任务模型并继续正常服务（不进行静默）；未设置或无可用回退模型时按静默规则拦截。"
+        ),
+        json_schema_extra={"label": "有回退模型时切换模型而非静默", "x-widget": "switch"},
+    )
+    fallback_models: List[str] = Field(
+        default_factory=list,
+        description="在 MaiBot 中已注册的回退模型名称列表（如 deepseek-v4-flash）；留空时将按静默规则关闭回复。",
+        json_schema_extra={"label": "已注册回退模型列表", "hint": "可直接在下拉框勾选当前 MaiBot 已注册模型；留空则使用静默规则"},
+    )
+    target_tasks: List[str] = Field(
+        default_factory=lambda: ["replyer", "planner", "utils", "memory", "learner", "fast_model"],
+        description="进入回退模式时需要切换模型的 MaiBot 任务列表（默认覆盖全部文本对话/思考/工具任务）。",
+        json_schema_extra={"label": "需切换的任务节点", "advanced": True},
+    )
+    switch_mode: ModelSwitchMode = Field(
+        default="replace",
+        description="replace=完全替换为回退模型；prepend=将回退模型置为优先并保留原模型在列表后方。",
+        json_schema_extra={"label": "模型列表切换策略", "x-widget": "select", "advanced": True},
+    )
+    fallback_to_quiet_if_unavailable: bool = Field(
+        default=True,
+        description="当配置的回退模型均不存在于当前 MaiBot 模型目录或读取失败时，自动降级执行静默规则。",
+        json_schema_extra={"label": "回退模型不可用时自动转静默", "x-widget": "switch"},
+    )
+    instance_root: str = Field(
+        default="",
+        description="可选的 MaiBot 实例根目录路径（包含 config/model_config.toml）；通常留空自动识别。",
+        json_schema_extra={"label": "MaiBot 实例根目录（留空自动识别）", "advanced": True},
+    )
+
+    @field_validator("fallback_models", "target_tasks", mode="before")
+    @classmethod
+    def coerce_model_lists(cls, value: Any) -> List[str]:
+        return _normalize_string_list(value)
+
+    @field_validator("instance_root")
+    @classmethod
+    def strip_instance_root(cls, value: str) -> str:
+        return value.strip()
+
+
 class HolidaySectionConfig(PluginConfigBase):
     """节假日与调休补班识别配置。"""
 
     __ui_label__: ClassVar[str] = "节假日识别"
     __ui_icon__: ClassVar[str] = "calendar"
-    __ui_order__: ClassVar[int] = 2
+    __ui_order__: ClassVar[int] = 3
 
     enabled: bool = Field(
         default=True,
@@ -372,7 +472,7 @@ class NoticeSectionConfig(PluginConfigBase):
 
     __ui_label__: ClassVar[str] = "提示语与通知"
     __ui_icon__: ClassVar[str] = "bell"
-    __ui_order__: ClassVar[int] = 3
+    __ui_order__: ClassVar[int] = 4
 
     enabled: bool = Field(
         default=True,
@@ -446,6 +546,16 @@ class NoticeSectionConfig(PluginConfigBase):
         description="静默时段内阻断依赖大模型的插件命令时回复的提示语；留空则静默阻断。",
         json_schema_extra={"label": "大模型插件阻断提示语", "x-widget": "textarea"},
     )
+    fallback_enter_notice: str = Field(
+        default="",
+        description="进入回退模型时段时发送的可选提示语（支持 {fallback_models}、{rule_name}、{end_time}）；默认留空不打扰。",
+        json_schema_extra={"label": "进入模型回退提示语（留空不发）", "x-widget": "textarea", "advanced": True},
+    )
+    fallback_exit_notice: str = Field(
+        default="",
+        description="退出回退模型时段并恢复原模型时发送的可选提示语；默认留空不发。",
+        json_schema_extra={"label": "恢复原模型提示语（留空不发）", "x-widget": "textarea", "advanced": True},
+    )
 
     @field_validator("target_groups", "target_users", mode="before")
     @classmethod
@@ -460,7 +570,7 @@ class PluginGuardSectionConfig(PluginConfigBase):
 
     __ui_label__: ClassVar[str] = "大模型插件守卫"
     __ui_icon__: ClassVar[str] = "shield"
-    __ui_order__: ClassVar[int] = 4
+    __ui_order__: ClassVar[int] = 5
 
     enabled: bool = Field(
         default=True,
@@ -515,7 +625,7 @@ class ExemptionSectionConfig(PluginConfigBase):
 
     __ui_label__: ClassVar[str] = "豁免群聊与用户"
     __ui_icon__: ClassVar[str] = "users"
-    __ui_order__: ClassVar[int] = 5
+    __ui_order__: ClassVar[int] = 6
 
     exempt_groups: List[GroupTarget] = Field(
         default_factory=list,
@@ -551,6 +661,7 @@ class QuietHoursPluginConfig(PluginConfigBase):
 
     plugin: PluginSectionConfig = Field(default_factory=PluginSectionConfig)
     schedule: ScheduleSectionConfig = Field(default_factory=ScheduleSectionConfig)
+    model_fallback: ModelFallbackSectionConfig = Field(default_factory=ModelFallbackSectionConfig)
     holiday: HolidaySectionConfig = Field(default_factory=HolidaySectionConfig)
     notices: NoticeSectionConfig = Field(default_factory=NoticeSectionConfig)
     plugin_guard: PluginGuardSectionConfig = Field(default_factory=PluginGuardSectionConfig)
